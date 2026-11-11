@@ -1,0 +1,162 @@
+[
+ {
+  "h": 69,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 70,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 71,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 71,
+  "srcName": "steal"
+ },
+ {
+  "h": 74,
+  "srcName": "steal"
+ },
+ {
+  "h": 76,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 77,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 78,
+  "srcName": "driving_layup"
+ },
+ {
+  "h": 78,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 78,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 78,
+  "srcName": "mid_range"
+ },
+ {
+  "h": 79,
+  "srcName": "driving_layup"
+ },
+ {
+  "h": 79,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 79,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 79,
+  "srcName": "mid_range"
+ },
+ {
+  "h": 80,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 80,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 80,
+  "srcName": "free_throw"
+ },
+ {
+  "h": 80,
+  "srcName": "mid_range"
+ },
+ {
+  "h": 81,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 81,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 81,
+  "srcName": "free_throw"
+ },
+ {
+  "h": 82,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 82,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 83,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 83,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 83,
+  "srcName": "free_throw"
+ },
+ {
+  "h": 84,
+  "srcName": "perimeter_defense"
+ },
+ {
+  "h": 84,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 85,
+  "srcName": "interior_defense"
+ },
+ {
+  "h": 85,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 86,
+  "srcName": "interior_defense"
+ },
+ {
+  "h": 86,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 86,
+  "srcName": "standing_dunk"
+ },
+ {
+  "h": 87,
+  "srcName": "interior_defense"
+ },
+ {
+  "h": 87,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 87,
+  "srcName": "standing_dunk"
+ },
+ {
+  "h": 88,
+  "srcName": "interior_defense"
+ },
+ {
+  "h": 88,
+  "srcName": "close_shot"
+ },
+ {
+  "h": 88,
+  "srcName": "standing_dunk"
+ }
+]

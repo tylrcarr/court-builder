@@ -1,418 +1,164 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { assess, attributes, badges, badgeTier, capsFor, defaultBody, empty, feet, inHeight, ladder, lowerLinkedRatings, name, positions, resolveLinks, tiers } from './engine.js';
-import { buildName, reportedBuildName } from './build-name.js';
+import { attributes, defaultBody, empty, feet, positions } from './engine.js';
+import { decodeBuild, shareUrl } from './share.js';
+import { derive, zeros } from './ui/derive.js';
+import { BodyLine, MiniRatings } from './ui/common.jsx';
+import BuilderView from './ui/BuilderView.jsx';
+import LabView, { defaultLab } from './ui/LabView.jsx';
+import VibesView, { defaultVibes } from './ui/VibesView.jsx';
+import SimilarView from './ui/SimilarView.jsx';
+import BadgesView from './ui/BadgesView.jsx';
+import CompareView from './ui/CompareView.jsx';
+import ExplorerView from './ui/ExplorerView.jsx';
 import './style.css';
 
-const groups = [...new Set(attributes.map(attr => attr.discipline))];
-const zeros = () => attributes.map(() => 0);
-const label = key => key === 'hall_of_fame' ? 'Hall of Fame' : name(key);
-const choose = (values, index, value) => values.map((old, i) => i === index ? value : old);
-const integer = (value, low, high) => Math.max(low, Math.min(high, Math.trunc(Number(value)) || 0));
+const KEYS = { build: 'court-builder.build.v2', library: 'court-builder.saved-builds.v1', lab: 'court-builder.lab.v1',
+  vibes: 'court-builder.vibes.v1', compare: 'court-builder.compare.v1' };
+const VIEWS = [
+  ['builder', 'Builder', 'Hand-tune a build'], ['lab', 'Build Lab', 'Optimize for badges'], ['vibes', 'Vibes', 'Describe a playstyle'],
+  ['similar', 'Find Similar', 'Same strengths, new body'], ['badges', 'Badges', 'Requirements & tokens'],
+  ['compare', 'Compare', 'Side by side'], ['explorer', 'Caps', 'How bodies move caps'], ['saved', 'Saved', 'Your library'],
+];
 
-function Select({ title, value, options, onChange, stepper = false }) {
-  const selected = options.findIndex(([key]) => String(key) === String(value));
-  return <label>{title}<div className={stepper ? 'frame-stepper' : undefined}>{stepper && <button type="button" aria-label={'Decrease ' + title} disabled={selected <= 0} onClick={() => onChange(String(options[selected - 1][0]))}>−</button>}<select aria-label={title} value={value} onChange={event => onChange(event.target.value)}>
-    {options.map(([key, text]) => <option key={key} value={key}>{text}</option>)}
-  </select>{stepper && <button type="button" aria-label={'Increase ' + title} disabled={selected >= options.length - 1} onClick={() => onChange(String(options[selected + 1][0]))}>+</button>}</div></label>;
+const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+const write = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ } };
+
+function validBuild(b) {
+  const row = positions[b?.body?.position]?.find(r => r.height === b.body.height);
+  const vec = (v, lo, hi) => Array.isArray(v) && v.length === attributes.length && v.every(x => Number.isInteger(x) && x >= lo && x <= hi);
+  return row && b.body.weight >= row.minWeight && b.body.weight <= row.maxWeight && b.body.wingspan >= row.minWingspan
+    && b.body.wingspan <= row.maxWingspan && vec(b.base, 25, 99) && vec(b.breakers ?? zeros(), 0, 5);
+}
+const blank = () => ({ body: defaultBody(), base: empty(), breakers: zeros(), budget: 8, category: '', specialCount: 2 });
+const fromResult = r => ({ body: r.body, base: r.manual ?? r.base, breakers: r.breakers ?? zeros(),
+  budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: r.specialCount ?? r.specialUsed ?? 0, title: r.title });
+
+function initialBuild() {
+  const hash = location.hash.match(/#b=([^&]+)/);
+  const shared = hash && decodeBuild(hash[1]);
+  if (shared && validBuild(shared)) return shared;
+  const saved = read(KEYS.build, null) ?? read('court-builder.build.v1', null);
+  return validBuild(saved) ? { ...blank(), ...saved } : blank();
 }
 
-function Rating({ title, value, max = 99, min = 25, onChange }) {
-  const [draft, setDraft] = useState(String(value));
-  useLayoutEffect(() => setDraft(String(value)), [value]);
-  return <input aria-label={title} type="number" min={min} max={max} value={draft}
-    onChange={event => setDraft(event.target.value)}
-    onBlur={() => {
-      const next = draft === '' ? value : integer(draft, min, max);
-      const accepted = onChange(next);
-      setDraft(String(accepted === false ? value : next));
-    }}
-    onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }} />;
-}
-
-const storageKey = 'court-builder.build.v1';
-const libraryKey = 'court-builder.saved-builds.v1';
-
-function isBuild(saved) {
-  const body = saved?.body;
-  const row = positions[body?.position]?.find(item => item.height === body.height);
-  const isVector = (values, min, max) => Array.isArray(values) && values.length === attributes.length &&
-    values.every(value => Number.isInteger(value) && value >= min && value <= max);
-  return row && Number.isInteger(body.weight) && Number.isInteger(body.wingspan) &&
-    body.weight >= row.minWeight && body.weight <= row.maxWeight &&
-    body.wingspan >= row.minWingspan && body.wingspan <= row.maxWingspan &&
-    isVector(saved.base, 25, 99) && isVector(saved.breakers, 0, 5);
-}
-
-function readStorage(key) {
-  try {
-    return JSON.parse(localStorage.getItem(key));
-  } catch {
-    return null;
-  }
-}
-
-function restoreBuild() {
-  const saved = readStorage(storageKey);
-  return isBuild(saved) ? saved : { body: defaultBody(), base: empty(), breakers: zeros() };
-}
-
-function restoreLibrary() {
-  const saved = readStorage(libraryKey);
-  return Array.isArray(saved) ? saved.filter(item =>
-    typeof item?.id === 'string' && typeof item.title === 'string' && isBuild(item)) : [];
-}
 function App() {
-  const [saved] = useState(restoreBuild);
-  const [library, setLibrary] = useState(restoreLibrary);
-  const [buildTitle, setBuildTitle] = useState('');
-  const [body, setBody] = useState(saved.body);
-  const [base, setBase] = useState(saved.base);
-  const [breakers, setBreakers] = useState(saved.breakers);
-  const [goals, setGoals] = useState(empty);
-  const [badgeGoals, setBadgeGoals] = useState({});
-  const [budget, setBudget] = useState(saved.budget ?? 8);
-  const [category, setCategory] = useState(saved.category ?? '');
-  const [specialCount, setSpecialCount] = useState(saved.specialCount ?? 2);
-  const [showBreakers, setShowBreakers] = useState(true);
-  const [view, setView] = useState('builder');
-  const [message, setMessage] = useState('');
-  const [showExport, setShowExport] = useState(false);
-  const [copyStatus, setCopyStatus] = useState('');
-  const [search, setSearch] = useState(null);
-  const [searchFrames, setSearchFrames] = useState(false);
-  const [running, setRunning] = useState(false);
-  const worker = useRef(null);
-  const caps = useMemo(() => capsFor(body), [body]);
-  const ratings = useMemo(() => resolveLinks(base, body.height), [base, body.height]);
-  const state = assess(ratings, body.height, caps);
-  const archetype = useMemo(() => buildName(body.position, ratings), [body.position, ratings]);
-  const linkedFloors = ratings.map((_, i) => resolveLinks(choose(base, i, 25), body.height)[i]);
-  const canIncrease = ratings.map((rating, i) => rating < caps[i] &&
-    assess(resolveLinks(choose(base, i, rating + 1), body.height), body.height, caps).fits);
-  const canUpgrade = canIncrease.some(Boolean);
-  const shownOverall = Math.max(25, Math.min(canUpgrade ? 98 : 99,
-    canUpgrade ? Math.floor(state.score + 1e-6) : 99));
-  const ladders = ratings.map((rating, i) => ladder(i, rating, caps[i], body.height, state.playerType));
-  const appliedCounts = breakers.map((used, i) => Math.min(used, ladders[i].filter(Boolean).length));
-  const final = ratings.map((rating, i) => rating + ladders[i].slice(0, appliedCounts[i]).reduce((sum, gain) => sum + gain, 0));
-  const count = appliedCounts.reduce((sum, used) => sum + used, 0);
-  const finalArchetype = count ? buildName(body.position, final) : archetype;
-  const hasReportedName = Boolean(reportedBuildName(body.position, count ? final : ratings));
-  const restrictedUsed = category ? Math.min(specialCount, appliedCounts.reduce((sum, used, i) =>
-    sum + (attributes[i].discipline === category || attributes[i].name === 'free_throw' ? used : 0), 0)) : 0;
-  const row = positions[body.position].find(option => option.height === body.height);
-  const eligibleBadges = badges.filter(badge => inHeight(badge, body.height));
-  const unlocked = eligibleBadges.map(badge => [badge, badgeTier(badge, final, body.height)]).filter(([, tier]) => tier);
-  const optionRange = (min, max, display) => Array.from({ length: max - min + 1 }, (_, i) => [min + i, display(min + i)]);
+  const [build, setBuildState] = useState(initialBuild);
+  const [view, setView] = useState(() => { const v = location.hash.match(/#\/(\w+)/)?.[1]; return VIEWS.some(([id]) => id === v) ? v : 'builder'; });
+  const [library, setLibrary] = useState(() => read(KEYS.library, []).filter(b => typeof b?.id === 'string' && validBuild(b)));
+  const [lab, setLab] = useState(() => ({ ...defaultLab(), ...read(KEYS.lab, {}) }));
+  const [vibes, setVibes] = useState(() => ({ ...defaultVibes(), ...read(KEYS.vibes, {}) }));
+  const [compare, setCompare] = useState(() => read(KEYS.compare, []).filter(validBuild));
+  const [toast, setToast] = useState('');
+  const d = useMemo(() => derive(build), [build]);
 
+  useEffect(() => write(KEYS.build, build), [build]);
+  useEffect(() => write(KEYS.library, library), [library]);
+  useEffect(() => write(KEYS.lab, lab), [lab]);
+  useEffect(() => write(KEYS.vibes, vibes), [vibes]);
+  useEffect(() => write(KEYS.compare, compare), [compare]);
+  useEffect(() => { if (location.hash !== `#/${view}`) history.pushState(null, '', `#/${view}`); window.scrollTo({ top: 0 }); }, [view]);
   useEffect(() => {
-    try {
-      localStorage.setItem(storageKey, JSON.stringify({ body, base, breakers, budget, category, specialCount }));
-    } catch {
-      // The builder remains usable when browser storage is unavailable.
-    }
-  }, [body, base, breakers, budget, category, specialCount]);
-  const exportText = [
-    'NBA 2K27 MyPLAYER build',
-    'Predicted build name: ' + (archetype ?? 'Unavailable'),
-    ...(count ? ['Predicted name after Cap Breakers: ' + (finalArchetype ?? 'Unavailable')] : []),
-    ...(hasReportedName ? ['Name source: user-confirmed in-game observation for this exact rating spread'] : []),
-    body.position + ' | ' + feet(body.height) + ' (' + body.height + ' in) | ' + body.weight + ' lb | Wingspan ' + feet(body.wingspan) + ' (' + body.wingspan + ' in)',
-    'Builder Overall: ' + shownOverall + ' | General breakers: ' + budget +
-      ' | Specialization: ' + (category ? name(category) + ' (' + specialCount + ')' : 'None'),
-    'Cap Breakers selected: ' + count + ' total | ' + (count - restrictedUsed) + '/' + budget +
-      ' general | ' + restrictedUsed + '/' + (category ? specialCount : 0) + ' specialized' +
-      (count - restrictedUsed > budget ? ' | Over budget' : ''),
-    'Attribute | Potential | Build Max | Breaker gains (steps 1–5) | Selected | Final | Cap Max (5 breakers)',
-    ...attributes.map(({ index: i, name: key }) =>
-      [name(key), ratings[i], caps[i], ladders[i].map(gain => '+' + gain).join(' '), appliedCounts[i], final[i], ratings[i] + ladders[i].reduce((sum, gain) => sum + gain, 0)].join(' | ')),
-  ].join('\n');
-  function clearSearch() {
-    worker.current?.terminate();
-    setRunning(false);
-    setSearch(null);
-  }
-
-  function changePosition(position) {
-    const limits = positions[position].find(option => option.height === body.height);
-    const valid = limits && body.weight >= limits.minWeight && body.weight <= limits.maxWeight &&
-      body.wingspan >= limits.minWingspan && body.wingspan <= limits.maxWingspan;
-    if (valid) {
-      setBody({ ...body, position });
-      clearSearch();
-      setMessage('Position changed to ' + position + '.');
-      return;
-    }
-    updateBody(defaultBody(position, body.height));
-  }
-  function changeHeight(height) {
-    const limits = positions[body.position].find(option => option.height === height);
-    updateBody({
-      ...body, height,
-      weight: integer(body.weight, limits.minWeight, limits.maxWeight),
-      wingspan: integer(body.wingspan, limits.minWingspan, limits.maxWingspan),
-    });
-  }
-
-  function updateBody(next) {
-    const caps = capsFor(next);
-    let adjusted = resolveLinks(ratings, next.height);
-    // Lower ratings above the new ceilings and propagate reductions through links.
-    for (let i = 0; i < caps.length; i++) {
-      if (adjusted[i] > caps[i]) {
-        adjusted = resolveLinks(lowerLinkedRatings(adjusted, next.height, i, caps[i]), next.height);
-      }
-    }
-    setBody(next);
-    setBase(adjusted);
-    setMessage('Frame updated. Ratings adjusted where the new frame requires it.');
-    clearSearch();
-  }
-
-  function saveBuild(startNew = false) {
-    const title = buildTitle.trim() || (archetype ?? 'MyPLAYER') + ' · ' + body.position + ' ' + feet(body.height);
-    const snapshot = { id: crypto.randomUUID(), title, body, base, breakers, budget, category, specialCount, overall: shownOverall };
-    const next = [snapshot, ...restoreLibrary()];
-    try {
-      localStorage.setItem(libraryKey, JSON.stringify(next));
-    } catch {
-      setMessage('Could not save this build in browser storage.');
-      return;
-    }
-    setLibrary(next);
-    setBuildTitle('');
-    if (startNew) {
-      setBody(defaultBody());
-      setBase(empty());
-      setBreakers(zeros());
-      clearSearch();
-      setGoals(empty());
-      setBadgeGoals({});
-    }
-    setMessage(startNew ? 'Saved ' + title + '. Started a new build.' : 'Saved ' + title + '.');
-  }
-
-  function loadBuild(snapshot) {
-    setBody(snapshot.body);
-    setBase(snapshot.base);
-    setBreakers(snapshot.breakers);
-    setBudget(snapshot.budget ?? 8);
-    setCategory(snapshot.category ?? '');
-    setSpecialCount(snapshot.specialCount ?? 2);
-    clearSearch();
-    setMessage('Loaded ' + snapshot.title + '.');
-  }
-  function setRating(index, value) {
-    if (ratings[index] === value) return;
-    let next = value < linkedFloors[index]
-      ? lowerLinkedRatings(base, body.height, index, value)
-      : choose(base, index, value);
-    let trial = assess(resolveLinks(next, body.height), body.height, caps);
-    const blocked = !trial.fits;
-    while (!trial.fits && value > ratings[index]) {
-      value--;
-      next = choose(base, index, value);
-      trial = assess(resolveLinks(next, body.height), body.height, caps);
-    }
-    const canLower = value < ratings[index] && trial.withinCaps && trial.score <= state.score + 1e-8;
-    if ((trial.fits || canLower) && value !== ratings[index]) setBase(next);
-    setMessage(blocked ? 'This attribute has reached its limit for the current build.' : '');
-    return !blocked || canLower;
-  }
-
-  function runSearch() {
-    const selected = badges.filter(badge => badgeGoals[badge.badge]).map(badge => ({
-      badge, tier: badgeGoals[badge.badge],
-    }));
-    if (!selected.length && goals.every(goal => goal === 25)) {
-      setSearch({ error: 'Set an attribute target or a required badge tier first.' });
-      return;
-    }
-    clearSearch();
-    setRunning(true);
-    const task = new Worker(new URL('./optimizer-worker.js', import.meta.url), { type: 'module' });
-    worker.current = task;
-    const finish = result => {
-      setSearch(result);
-      setRunning(false);
-      task.terminate();
+    const onHash = () => {
+      const shared = location.hash.match(/#b=([^&]+)/);
+      if (shared) { const b = decodeBuild(shared[1]); if (b && validBuild(b)) { setBuildState(b); setView('builder'); notify('Opened shared build.'); } return; }
+      const v = location.hash.match(/#\/(\w+)/)?.[1];
+      if (v && VIEWS.some(([id]) => id === v)) setView(v);
     };
-    task.onmessage = event => finish(event.data);
-    task.onerror = () => finish({ error: 'The optimizer could not complete this search.' });
-    task.postMessage({ body, searchFrames, goals, badgeGoals: selected, budget,
-      specialization: { category, count: category ? specialCount : 0 }, attributes });
-  }
+    window.addEventListener('hashchange', onHash); window.addEventListener('popstate', onHash);
+    return () => { window.removeEventListener('hashchange', onHash); window.removeEventListener('popstate', onHash); };
+  }, []);
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 3200); return () => clearTimeout(t); }, [toast]);
 
-  function apply(plan) {
-    const applied = zeros();
-    plan.uses.forEach(use => applied[use.index]++);
-    setBody(plan.body);
-    setBase(plan.seed);
-    setBreakers(applied);
-    setMessage('Plan loaded. Verify the base ratings and breaker gains in 2K HQ.');
-    setView('builder');
-  }
+  const history = useRef({ past: [], future: [] });
+  const [, bump] = useState(0);
+  const commit = next => setBuildState(b => {
+    const value = typeof next === 'function' ? next(b) : next;
+    if (value !== b) { history.current.past = [...history.current.past.slice(-99), b]; history.current.future = []; bump(n => n + 1); }
+    return value;
+  });
+  const setBuild = patch => commit(b => ({ ...b, ...patch }));
+  const undo = () => setBuildState(b => { const h = history.current; if (!h.past.length) return b;
+    h.future = [b, ...h.future]; const prev = h.past[h.past.length - 1]; h.past = h.past.slice(0, -1); bump(n => n + 1); return prev; });
+  const redo = () => setBuildState(b => { const h = history.current; if (!h.future.length) return b;
+    h.past = [...h.past, b]; const next = h.future[0]; h.future = h.future.slice(1); bump(n => n + 1); return next; });
+  useEffect(() => {
+    const onKey = e => {
+      if (!(e.ctrlKey || e.metaKey) || /input|textarea|select/i.test(e.target.tagName)) return;
+      if (e.key.toLowerCase() === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const notify = setToast;
+  const open = r => { commit({ ...blank(), ...fromResult(r) }); setView('builder'); notify('Build loaded into the Builder. Ctrl+Z to go back.'); };
+  const addCompare = r => { setCompare(c => [...c, { ...fromResult(r), title: r.title ?? derive(fromResult(r)).finalName }].slice(-4)); notify('Added to Compare.'); };
+  const save = b => {
+    const item = { ...blank(), ...fromResult(b), id: crypto.randomUUID(),
+      title: b.title ?? derive(fromResult(b)).finalName ?? 'Saved build', savedAt: Date.now() };
+    setLibrary(l => [item, ...l]); notify(`Saved “${item.title}”.`);
+  };
+  const findWith = (badge, tier) => { setLab(l => ({ ...l, badgeGoals: { ...l.badgeGoals, [badge]: tier } })); setView('lab'); };
 
-  return <div className="shell">
-    <header><div className="mark">CB</div><div><div className="wordmark">COURT BUILDER</div>
-      <div className="subhead">NBA 2K27 · MYPLAYER WORKBENCH</div></div><span className="status">RULES BETA</span></header>
+  return <div className="app">
+    <header className="topbar">
+      <div className="brand"><div className="logo">CB</div><div><b>COURT BUILDER</b><small>NBA 2K27 MyPLAYER lab</small></div></div>
+      <nav aria-label="Views">{VIEWS.map(([id, text, hint]) => <button key={id} className={view === id ? 'on' : ''} title={hint}
+        aria-current={view === id ? 'page' : undefined} onClick={() => setView(id)}>{text}
+        {id === 'compare' && compare.length > 0 && <span className="count">{compare.length}</span>}
+        {id === 'saved' && library.length > 0 && <span className="count">{library.length}</span>}</button>)}</nav>
+      <button className="current" onClick={() => setView('builder')} title="Current build">
+        <span>{d.finalName ?? 'Current build'}</span><small>{build.body.position} {feet(build.body.height)} · {d.unlocked.length} badges</small></button>
+    </header>
     <main>
-      <section className="hero">
-        <div><div className="eyebrow">NBA 2K27 / MYCAREER</div><h1>MyPLAYER Builder</h1>
-          <p>Set your build’s potential. Distribute your attributes up to 99 Overall.</p><div className="build-name"><span>{hasReportedName ? 'In-game name (reported)' : count ? 'Predicted name after Cap Breakers' : 'Predicted build name'}</span><strong>{finalArchetype ?? 'Unavailable'}</strong>{count > 0 && <small>Base build: {archetype ?? 'Unavailable'}</small>}</div></div>
-        <div className="overall" aria-label={shownOverall + ' Overall'}>
-          <span>OVERALL</span><strong>{shownOverall}</strong><span>MAX 99</span>
-          <progress aria-label="Progress to 99 Overall" value={shownOverall - 25} max={74} />
-        </div>
-      </section>
-      <section className="controls card">
-        <Select title="Position" value={body.position} options={Object.keys(positions).map(pos => [pos, pos])}
-          onChange={changePosition} />
-        <Select stepper title="Height" value={body.height} options={positions[body.position].map(item => [item.height, feet(item.height)])}
-          onChange={height => changeHeight(Number(height))} />
-        <Select stepper title="Weight" value={body.weight} options={optionRange(row.minWeight, row.maxWeight, value => value + ' lb')}
-          onChange={weight => updateBody({ ...body, weight: Number(weight) })} />
-        <Select stepper title="Wingspan" value={body.wingspan} options={optionRange(row.minWingspan, row.maxWingspan, feet)}
-          onChange={wingspan => updateBody({ ...body, wingspan: Number(wingspan) })} />
-      </section>
-      <nav aria-label="Workbench">
-        <button className={view === 'builder' ? 'selected' : ''} onClick={() => setView('builder')}>Builder</button>
-        <button className={view === 'optimizer' ? 'selected' : ''} onClick={() => setView('optimizer')}>Optimizer</button>
-        <button className={view === 'badges' ? 'selected' : ''} onClick={() => setView('badges')}>Badges <span>{unlocked.length}</span></button>
-      </nav>
-      <section className="card panel breaker-settings pool-strip">
-            <div className="eyebrow">CAP BREAKER POOL</div><h2>{count} applied</h2>
-            <label>General breakers<Rating title="General breakers" value={budget} min={0} max={105}
-              onChange={value => { if (value !== budget) { setBudget(value); clearSearch(); } }} /></label>
-            <Select title="Specialization" value={category} options={[[ '', 'None'], ...groups.map(group => [group, name(group)])]}
-              onChange={value => { setCategory(value); clearSearch(); }} />
-            {category && <label>Specialized breakers<Rating title="Specialized breakers" value={specialCount} min={0} max={30}
-              onChange={value => { if (value !== specialCount) { setSpecialCount(value); clearSearch(); } }} /></label>}
-            <small className={count - restrictedUsed > budget ? 'warn' : ''}>{count - restrictedUsed}/{budget} general used · {restrictedUsed}/{category ? specialCount : 0} specialized used</small>
-          </section>
-      <div className="workspace">
-        <div>
-          {view === 'builder' && <section className="card panel">
-            <div className="panel-head"><div><div className="eyebrow">SET YOUR POTENTIAL</div><h2>Attributes</h2></div>
-              <div className="builder-actions"><button aria-expanded={showExport} onClick={() => { setShowExport(!showExport); setCopyStatus(''); }}>Export Build</button><button aria-pressed={showBreakers} onClick={() => setShowBreakers(!showBreakers)}>{showBreakers ? 'Hide' : 'Show'} Cap Breaker Preview</button><button onClick={() => { setBase(empty()); setBreakers(zeros()); setMessage('Build cleared.'); }}>Clear Build</button></div></div>
-            <p className="muted">Linked ratings move together. Select a Cap Breaker step to preview your new rating.</p>
-            <section className="saved-builds" aria-label="Saved builds">
-              <div className="save-build-controls">
-                <input type="text" aria-label="Build name for saving" placeholder="Name this build (optional)"
-                  maxLength={80} value={buildTitle} onChange={event => setBuildTitle(event.target.value)} />
-                <button type="button" onClick={() => saveBuild()}>Save Build</button>
-                <button type="button" onClick={() => saveBuild(true)}>Save &amp; New</button>
-              </div>
-              <details>
-                <summary>Saved builds ({library.length})</summary>
-                {library.length ? <ul>{library.map(item => <li key={item.id}>
-                  <span><strong>{item.title}</strong><small>{item.body.position} · {feet(item.body.height)} · {item.body.weight} lb · {item.overall} OVR</small></span>
-                  <button type="button" onClick={() => loadBuild(item)}>Load build</button>
-                </li>)}</ul> : <p className="muted">Saved builds will appear here.</p>}
-              </details>
-            </section>
-            {showExport && <div className="build-export">
-              <label htmlFor="build-export">Build export</label>
-              <textarea id="build-export" rows={8} readOnly value={exportText} onFocus={event => event.target.select()} />
-              <button onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(exportText);
-                  setCopyStatus('Copied.');
-                } catch {
-                  document.getElementById('build-export')?.focus();
-                  setCopyStatus('Press Ctrl+C to copy the selected text.');
-                }
-              }}>Copy text</button>
-              <span role="status">{copyStatus}</span>
-            </div>}
-            <div aria-live="polite" className="message">{message}{!state.fits && <p>These ratings exceed this frame’s 99 Overall limit. Lower ratings to continue.</p>}</div>
-            <div className={showBreakers ? 'attribute-head preview-open' : 'attribute-head'}><span>Attribute</span><span>Potential</span>{showBreakers && <span>Cap Breaker Preview</span>}<span>Final</span><span title="Maximum from this potential with five Cap Breakers">Cap Max</span><span title="Attribute ceiling for this body">Build Max</span></div>
-            {groups.map(group => <div key={group}>
-              <h3 className="group">{name(group)}</h3>
-              {attributes.filter(attr => attr.discipline === group).map(({ index: i, name: key }) => (
-                <div className={showBreakers ? 'attribute preview-open' : 'attribute'} key={key}>
-                  <div>{name(key)}{linkedFloors[i] > 25 && <small>Linked minimum {linkedFloors[i]}</small>}</div>
-                  <div className="potential">
-                    <input type="range" aria-label={name(key) + ' potential slider'} min={25} max={caps[i]}
-                      value={ratings[i]} disabled={caps[i] === 25}
-                      style={{ '--fill': ((ratings[i] - 25) / Math.max(1, caps[i] - 25) * 100) + '%' }}
-                      onChange={event => setRating(i, Number(event.target.value))} />
-                    <button className="rating-step" type="button" aria-label={'Decrease ' + name(key) + ' by 1'} disabled={ratings[i] <= 25} onClick={() => setRating(i, ratings[i] - 1)}>−</button>
-                    <Rating title={name(key) + ' potential'} value={ratings[i]} max={caps[i]}
-                      onChange={value => setRating(i, value)} />
-                    <button className="rating-step" type="button" aria-label={'Increase ' + name(key) + ' by 1'} disabled={!canIncrease[i]} title={!canIncrease[i] ? 'This attribute cannot increase on the current build' : undefined} onClick={() => setRating(i, ratings[i] + 1)}>+</button>
-                  </div>
-                  {showBreakers && <div className="breaker-steps" role="group" aria-label={name(key) + ' Cap Breaker Preview'}>
-                    {ladders[i].map((gain, step) => <button key={step} type="button" disabled={!gain}
-                      className={step < appliedCounts[i] ? 'applied-step' : ''}
-                      aria-label={name(key) + ' breaker ' + (step + 1) + ', gain ' + gain}
-                      aria-pressed={step < appliedCounts[i]}
-                      onClick={() => setBreakers(choose(breakers, i, appliedCounts[i] === step + 1 ? 0 : step + 1))}>
-                      {gain ? '+' + gain : '–'}</button>)}
-                  </div>}
-                  <strong className={final[i] > ratings[i] ? 'lime' : ''}>{final[i]}</strong>
-                  <span className="breaker-max" aria-label={name(key) + ' cap max'}>{ratings[i] + ladders[i].reduce((sum, gain) => sum + gain, 0)}</span><span className="body-max" aria-label={name(key) + ' build max'}>{caps[i]}</span>
-                </div>
-              ))}
-            </div>)}
-          </section>}
-          {view === 'optimizer' && <section className="card panel">
-            <div className="eyebrow">02 / BUILD SEARCH</div><h2>Target optimizer</h2>
-            <p className="muted">Find starting ratings and a breaker plan that reaches your targets. Plans with room left let you put more points into other attributes.</p>
-            <div className="targets">{attributes.map(({ index, name: key }) => <label key={key}>{name(key)}
-              <Rating title={name(key) + ' target'} value={goals[index]} onChange={value => {
-                if (value !== goals[index]) { setGoals(choose(goals, index, value)); clearSearch(); }
-              }} /></label>)}</div>
-            <h3>Required badges</h3>
-            <div className="badge-goals">{eligibleBadges.map(badge => <Select key={badge.badge} title={label(badge.name)}
-              value={badgeGoals[badge.badge] ?? ''} options={[[ '', 'Optional'], ...tiers.map(tier => [tier, label(tier)])]}
-              onChange={value => { setBadgeGoals({ ...badgeGoals, [badge.badge]: value }); clearSearch(); }} />)}</div>
-            {badges.some(badge => badgeGoals[badge.badge] && !inHeight(badge, body.height)) &&
-              <button onClick={() => { setBadgeGoals(Object.fromEntries(eligibleBadges.map(badge => [badge.badge, badgeGoals[badge.badge]]))); clearSearch(); }}>Clear badge targets outside this height</button>}
-            <label className="frame-toggle"><input type="checkbox" checked={searchFrames} onChange={event => { setSearchFrames(event.target.checked); clearSearch(); }} /> Compare sample frames at this position</label>
-            <button className="primary" disabled={running} onClick={runSearch}>{running ? 'Searching…' : 'Find plans'}</button>
-            <div aria-live="polite">{search?.error && <p className="warn">{search.error}</p>}
-              {search?.results && <p className="muted">{search.checked.toLocaleString()} candidates checked across {search.frames} {search.frames === 1 ? 'frame' : 'frames'}. {search.results.length ? 'Open a plan to inspect all ratings.' : 'No plan found for this frame and budget in this search.'}</p>}</div>
-            {search?.results?.map((plan, i) => <article className="plan" key={plan.base.join(',')}>
-              <div><strong>{i === 0 ? 'Most room for upgrades' : 'Plan ' + (i + 1)}</strong><small>{feet(plan.body.height)} · {plan.body.weight} lb · {feet(plan.body.wingspan)} wingspan · {plan.general} general · {plan.specialized} specialized</small></div>
-              <button onClick={() => apply(plan)}>Open plan</button>
-              <p>{plan.uses.length ? attributes.filter(attr => plan.uses.some(use => use.index === attr.index)).map(attr =>
-                name(attr.name) + ' ' + plan.base[attr.index] + ' → ' + plan.final[attr.index]).join(' · ') : 'Targets reached with base ratings.'}</p>
-            </article>)}
-          </section>}
-          {view === 'badges' && <section className="card panel">
-            <div className="eyebrow">03 / BADGE QUALIFICATION</div><h2>Badge requirements</h2>
-            <p className="muted">Qualification uses your final ratings and height. Badge token spending is separate.</p>
-            {badges.map(badge => <details key={badge.badge}>
-              <summary>{label(badge.name)} <span>{!inHeight(badge, body.height) ? 'Height restricted' :
-                label(badgeTier(badge, final, body.height) ?? 'locked')}</span></summary>
-              {badge.tiers.map(tier => <p key={tier.tier}><b>{label(tier.tier)}</b> {tier.requirements.map((req, i) =>
-                (i ? ' ' + tier.requirements[i - 1].operator_to_next + ' ' : '') +
-                name(attributes[req.attribute].name) + ' ' + req.minimum).join('') || 'No rating requirement'}</p>)}
-            </details>)}
-          </section>}
-        </div>
+      {view === 'builder' && <BuilderView build={build} setBuild={setBuild} onSave={save} notify={notify} library={library}
+        undo={history.current.past.length ? undo : null} redo={history.current.future.length ? redo : null} />}
+      {view === 'lab' && <LabView lab={lab} setLab={setLab} onOpen={open} onCompare={addCompare} onSave={save} />}
+      {view === 'vibes' && <VibesView vibes={vibes} setVibes={setVibes} onOpen={open} onCompare={addCompare} onSave={save} />}
+      {view === 'similar' && <SimilarView build={build} library={library} onOpen={open} onCompare={addCompare} onSave={save} />}
+      {view === 'badges' && <BadgesView build={build} onFindWith={findWith} />}
+      {view === 'compare' && <CompareView items={compare} setItems={setCompare} build={build} library={library} onOpen={open} />}
+      {view === 'explorer' && <ExplorerView build={build} onUseBody={body => { setBuild({ body, base: empty(), breakers: zeros() }); setView('builder'); }} />}
+      {view === 'saved' && <SavedView library={library} setLibrary={setLibrary} onOpen={open} onCompare={addCompare} notify={notify} />}
+    </main>
+    <footer className="foot">Court Builder · independent planning tool · rules from NBA 2K HQ tuning, verified against the HQ builder.
+      Not affiliated with 2K.</footer>
+    <div className={'toast' + (toast ? ' show' : '')} role="status" aria-live="polite">{toast}</div>
+  </div>;
+}
 
-      </div>
-    </main><footer>COURT BUILDER · Independent NBA 2K27 planning tool</footer>
+function SavedView({ library, setLibrary, onOpen, onCompare, notify }) {
+  const [query, setQuery] = useState('');
+  const shown = library.filter(b => !query || b.title.toLowerCase().includes(query.toLowerCase()));
+  const exportAll = () => {
+    const blob = new Blob([JSON.stringify(library, null, 1)], { type: 'application/json' });
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: 'court-builder-builds.json' });
+    a.click(); URL.revokeObjectURL(a.href);
+  };
+  const importFile = async file => {
+    try {
+      const items = JSON.parse(await file.text()).filter(validBuild).map(b => ({ ...b, id: crypto.randomUUID() }));
+      setLibrary(l => [...items, ...l]); notify(`Imported ${items.length} builds.`);
+    } catch { notify('That file is not a Court Builder export.'); }
+  };
+  return <div className="saved">
+    <section className="card">
+      <div className="card-head"><div><h2>Saved builds</h2><p className="muted">Stored in this browser. Export to back up or move them.</p></div>
+        <div className="actions"><input type="search" placeholder="Filter…" value={query} onChange={e => setQuery(e.target.value)} />
+          <button onClick={exportAll} disabled={!library.length}>Export JSON</button>
+          <label className="button">Import JSON<input type="file" accept="application/json" hidden onChange={e => e.target.files[0] && importFile(e.target.files[0])} /></label></div></div>
+      {!shown.length && <p className="muted">No saved builds yet. Save from the Builder or any search result.</p>}
+      <div className="results">{shown.map(b => { const d = derive(b); return <article key={b.id} className="result">
+        <header><div><h3 contentEditable suppressContentEditableWarning onBlur={e => {
+          const title = e.currentTarget.textContent.trim(); if (title) setLibrary(l => l.map(x => x.id === b.id ? { ...x, title } : x)); }}>{b.title}</h3>
+          <BodyLine body={b.body} /><small className="muted">{d.finalName} · {d.unlocked.length} badges</small></div></header>
+        <MiniRatings final={d.final} caps={d.caps} />
+        <footer><button className="primary" onClick={() => onOpen(b)}>Open</button><button onClick={() => onCompare(b)}>Compare</button>
+          <button onClick={async () => { try { await navigator.clipboard.writeText(shareUrl(b)); notify('Share link copied.'); } catch { prompt('Copy this link', shareUrl(b)); } }}>Share</button>
+          <button className="danger" onClick={() => setLibrary(l => l.filter(x => x.id !== b.id))}>Delete</button></footer>
+      </article>; })}</div>
+    </section>
   </div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

@@ -1,0 +1,234 @@
+// Build solver: finds base ratings (and Cap Breaker plans) that satisfy rating floors and badge
+// tiers on a body, then spends the remaining Overall budget on weighted priorities.
+// The in-game builder requires every build to be filled to 99 Overall, so "budget" here means
+// how the 99 is spent, not how much is left over.
+import { alternatives, attributes, badgeTier, badges, capsFor, defaultBody, inHeight, ladder, mergeFloors,
+  overall, positions, resolveLinks, tiers } from './engine.js';
+
+const N = attributes.length;
+const LIMIT = 99 + 1e-8;
+export const tierRank = tier => tier ? tiers.indexOf(tier) + 1 : 0;
+
+export function clampLinks(manual, height, caps) {
+  return resolveLinks(manual, height).map((value, i) => Math.min(value, caps[i]));
+}
+
+function ctxFor(body) {
+  return { body, h: body.height, caps: capsFor(body) };
+}
+
+const score = (ratings, h) => overall(ratings, h);
+
+// Smallest base rating whose first k breakers reach target (null if impossible).
+function baseForTarget(i, target, k, ctx, playerType) {
+  for (let b = 25; b <= Math.min(target, ctx.caps[i]); b++) {
+    const gains = ladder(i, b, ctx.caps[i], ctx.h, playerType).slice(0, k);
+    if (b + gains.reduce((s, g) => s + g, 0) >= target) return b;
+  }
+  return null;
+}
+
+export function finalsFor(base, breakers, ctx) {
+  const { playerType } = score(base, ctx.h);
+  return base.map((rating, i) => rating + ladder(i, rating, ctx.caps[i], ctx.h, playerType)
+    .slice(0, breakers[i]).reduce((s, g) => s + g, 0));
+}
+
+function isEligible(i, special) {
+  return special.category && (attributes[i].discipline === special.category || attributes[i].name === 'free_throw');
+}
+
+// Satisfy final-rating targets on one body, using breakers where they save the most Overall.
+export function satisfy(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}) {
+  // Breakers never raise a rating past the body's physical cap.
+  if (targets.some((t, i) => t > ctx.caps[i])) return null;
+  const k = new Array(N).fill(0);
+  let floors = [...targets];
+  let manual = floors;
+  let base = clampLinks(manual, ctx.h, ctx.caps);
+  let current = score(base, ctx.h);
+  let generalLeft = general, specialLeft = special.count ?? 0;
+  if (!general && !specialLeft) return pack();
+
+  for (let round = 0; round < general + (special.count ?? 0); round++) {
+    let best = null;
+    for (let i = 0; i < N; i++) {
+      if (targets[i] <= 25 || k[i] >= 5) continue;
+      const useSpecial = specialLeft > 0 && isEligible(i, special);
+      if (!useSpecial && generalLeft <= 0) continue;
+      const b = baseForTarget(i, targets[i], k[i] + 1, ctx, current.playerType);
+      if (b == null || b >= floors[i]) continue;
+      const trialFloors = floors.map((f, j) => j === i ? b : f);
+      const trial = clampLinks(trialFloors, ctx.h, ctx.caps);
+      const s = score(trial, ctx.h);
+      const saving = current.score - s.score;
+      if (saving > 1e-9 && (!best || saving > best.saving)) best = { i, b, trialFloors, s, saving, useSpecial };
+    }
+    if (!best) break;
+    k[best.i]++;
+    floors = best.trialFloors;
+    current = best.s;
+    if (best.useSpecial) specialLeft--; else generalLeft--;
+  }
+  manual = floors;
+  base = clampLinks(manual, ctx.h, ctx.caps);
+  return pack();
+
+  function pack() {
+    const s = score(base, ctx.h);
+    if (s.score > LIMIT) return null;
+    const final = finalsFor(base, k, ctx);
+    if (final.some((v, i) => v < targets[i])) return null;
+    return { manual: [...manual], base, breakers: [...k], final, ovr: s.score, playerType: s.playerType,
+      generalUsed: general - generalLeft, specialUsed: (special.count ?? 0) - specialLeft };
+  }
+}
+
+// Spend the remaining Overall budget greedily on weighted attributes.
+export function fill(plan, weights, ctx, locked = []) {
+  let manual = [...plan.manual];
+  let base = clampLinks(manual, ctx.h, ctx.caps);
+  let ovr = score(base, ctx.h).score;
+  const active = weights.map((w, i) => w > 0 && !locked[i] ? i : -1).filter(i => i >= 0);
+  if (!active.length) return plan;
+  for (const step of [6, 2, 1]) {
+    for (let guard = 0; guard < 400; guard++) {
+      let best = null;
+      for (const i of active) {
+        if (base[i] >= ctx.caps[i]) continue;
+        const trialManual = [...manual];
+        trialManual[i] = Math.min(ctx.caps[i], Math.max(manual[i], base[i]) + step);
+        const trial = clampLinks(trialManual, ctx.h, ctx.caps);
+        const s = score(trial, ctx.h).score;
+        if (s > LIMIT) continue;
+        let gain = 0;
+        for (let j = 0; j < N; j++) gain += weights[j] * (trial[j] - base[j]);
+        const value = gain / Math.max(1e-4, s - ovr);
+        if (gain > 0 && (!best || value > best.value)) best = { trialManual, trial, s, value };
+      }
+      if (!best) break;
+      manual = best.trialManual; base = best.trial; ovr = best.s;
+    }
+  }
+  const { playerType } = score(base, ctx.h);
+  const final = finalsFor(base, plan.breakers, ctx);
+  return { ...plan, manual, base, final, ovr, playerType };
+}
+
+export function badgeSummary(final, height) {
+  const unlocked = [];
+  for (const badge of badges) {
+    const tier = badgeTier(badge, final, height);
+    if (tier) unlocked.push({ badge: badge.badge, name: badge.name, tier });
+  }
+  return { unlocked, points: unlocked.reduce((s, b) => s + tierRank(b.tier), 0) };
+}
+
+// OR-branches of all requested badge tiers merged with attribute targets.
+export function targetBranches(goals, badgeGoals, height, max = 24) {
+  let branches = [goals];
+  for (const { badge, tier } of badgeGoals) {
+    if (!inHeight(badge, height)) return [];
+    const options = alternatives(badge.tiers.find(t => t.tier === tier));
+    const merged = new Map();
+    for (const b of branches) for (const o of options) {
+      const m = mergeFloors(b, o);
+      merged.set(m.join(','), m);
+    }
+    branches = [...merged.values()].sort((a, b) => sum(a) - sum(b)).slice(0, max);
+  }
+  return branches;
+}
+const sum = values => values.reduce((s, v) => s + v, 0);
+
+export function framesFor(position, { heights, thorough = false } = {}) {
+  const frames = [];
+  for (const row of positions[position]) {
+    if (heights && (row.height < heights[0] || row.height > heights[1])) continue;
+    const mid = defaultBody(position, row.height);
+    const weightSteps = thorough ? 5 : 3, wingSteps = thorough ? 4 : 3;
+    const pick = (lo, hi, n) => [...new Set(Array.from({ length: n }, (_, k) => Math.round(lo + (hi - lo) * k / (n - 1))))];
+    for (const weight of pick(row.minWeight, row.maxWeight, weightSteps))
+      for (const wingspan of pick(row.minWingspan, row.maxWingspan, wingSteps))
+        frames.push({ ...mid, weight, wingspan });
+  }
+  return frames;
+}
+
+const objective = (final, weights) => final.reduce((s, v, i) => s + weights[i] * v, 0);
+
+// Similarity on how far above the floor each rating sits.
+export function similarity(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i] - 25, y = b[i] - 25;
+    dot += x * y; na += x * x; nb += y * y;
+  }
+  return na && nb ? dot / Math.sqrt(na * nb) : 0;
+}
+
+/**
+ * Searches bodies for builds.
+ * options: { positions, heights:[lo,hi], thorough, goals:number[21], badgeGoals:[{badge,tier}],
+ *   weights:number[21], breakers:{general, special:{category,count}}, reference?:number[21],
+ *   limit, onProgress }
+ */
+export function search(options) {
+  const { goals = attributes.map(() => 25), badgeGoals = [], weights = attributes.map(() => 1),
+    breakers = { general: 0, special: { category: '', count: 0 } }, reference = null, limit = 12,
+    onProgress } = options;
+  const selected = options.positions?.length ? options.positions : Object.keys(positions);
+  const frames = selected.flatMap(p => framesFor(p, options));
+  const shortlist = [];
+  let checked = 0, feasible = 0;
+  frames.forEach((body, index) => {
+    const ctx = ctxFor(body);
+    let best = null;
+    for (const branch of targetBranches(goals, badgeGoals, body.height)) {
+      checked++;
+      const plan = satisfy(branch, ctx, breakers);
+      if (plan && (!best || plan.ovr < best.ovr)) best = plan;
+    }
+    if (best) { feasible++; shortlist.push({ body, plan: best }); }
+    if (onProgress && index % 25 === 0) onProgress({ done: index + 1, total: frames.length });
+  });
+  // Fewer Overall points used on the requirements = more room for priorities. Fill the most promising.
+  shortlist.sort((a, b) => a.plan.ovr - b.plan.ovr);
+  const pool = shortlist.slice(0, Math.max(limit * 6, 60)).map(({ body, plan }) => {
+    const ctx = ctxFor(body);
+    const filled = fill(plan, weights, ctx, goals.map(() => false));
+    const match = reference ? similarity(filled.final, reference) : null;
+    const value = reference ? match * 1000 + objective(filled.final, weights) / 100 : objective(filled.final, weights);
+    return { body, ...filled, value, similarity: match, badges: badgeSummary(filled.final, body.height) };
+  });
+  pool.sort((a, b) => b.value - a.value);
+  // Identical frames at different positions produce identical ratings: merge them, then keep variety
+  // (at most two results per height).
+  const merged = new Map();
+  for (const r of pool) {
+    const key = [r.body.height, r.body.weight, r.body.wingspan, r.final.join(',')].join('|');
+    const hit = merged.get(key);
+    if (hit) { if (!hit.alsoPositions.includes(r.body.position)) hit.alsoPositions.push(r.body.position); }
+    else merged.set(key, { ...r, alsoPositions: [] });
+  }
+  const seen = new Map(), results = [];
+  for (const r of merged.values()) {
+    const key = r.body.height;
+    if ((seen.get(key) ?? 0) >= 2) continue;
+    seen.set(key, (seen.get(key) ?? 0) + 1);
+    results.push(r);
+    if (results.length >= limit) break;
+  }
+  return { results, checked, frames: frames.length, feasible };
+}
+
+// Cheapest way (fewest Overall points) to reach a badge tier on one body, ignoring everything else.
+export function cheapestBadge(badge, tier, body) {
+  const ctx = ctxFor(body);
+  let best = null;
+  for (const branch of targetBranches(attributes.map(() => 25), [{ badge, tier }], body.height)) {
+    const plan = satisfy(branch, ctx);
+    if (plan && (!best || plan.ovr < best.ovr)) best = plan;
+  }
+  return best;
+}

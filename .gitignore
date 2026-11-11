@@ -4,3 +4,5 @@ dist/
 .idea/shelf/
 *.log
 .env*
+research/apk/
+research/third-party/
