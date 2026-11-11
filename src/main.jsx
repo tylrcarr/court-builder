@@ -1,27 +1,28 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { RENAMED } from './animations.js';
 import { createRoot } from 'react-dom/client';
-import { attributes, defaultBody, empty, feet, positions } from './engine.js';
+import { attributes, badges, defaultBody, empty, feet, positions } from './engine.js';
 import { decodeBuild, shareUrl } from './share.js';
 import { derive, zeros } from './ui/derive.js';
 import { BodyLine, MiniRatings } from './ui/common.jsx';
 import BuilderView from './ui/BuilderView.jsx';
+import { defaultPrefs } from './breakpoints.js';
 import LabView, { defaultLab } from './ui/LabView.jsx';
-import VibesView, { defaultVibes } from './ui/VibesView.jsx';
-import SimilarView from './ui/SimilarView.jsx';
 import BadgesView from './ui/BadgesView.jsx';
 import CompareView from './ui/CompareView.jsx';
 import ExplorerView from './ui/ExplorerView.jsx';
 import './style.css';
 
-const KEYS = { build: 'court-builder.build.v2', library: 'court-builder.saved-builds.v1', lab: 'court-builder.lab.v1',
-  vibes: 'court-builder.vibes.v1', compare: 'court-builder.compare.v1' };
+const KEYS = { build: 'court-builder.build.v2', library: 'court-builder.saved-builds.v1', lab: 'court-builder.lab.v3',
+  compare: 'court-builder.compare.v1', prefs: 'court-builder.prefs.v3', searches: 'court-builder.searches.v1' };
 const VIEWS = [
-  ['builder', 'Builder', 'Hand-tune a build'], ['lab', 'Build Lab', 'Optimize for badges'], ['vibes', 'Vibes', 'Describe a playstyle'],
-  ['similar', 'Find Similar', 'Same strengths, new body'], ['badges', 'Badges', 'Requirements & tokens'],
-  ['compare', 'Compare', 'Side by side'], ['explorer', 'Caps', 'How bodies move caps'], ['saved', 'Saved', 'Your library'],
+  ['builder', 'Builder', 'Hand-tune a build'], ['lab', 'Build Lab', 'Badge-first optimizer across bodies'],
+  ['reference', 'Reference', 'Badge requirements and body caps'], ['compare', 'Compare', 'Side by side'], ['saved', 'Saved', 'Your library'],
 ];
 
-const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+// Saved Lab prefs/searches from before the contact-dunk table was split keep their picks under the new names.
+const migrate = raw => raw && Object.entries(RENAMED).reduce((s, [from, to]) => s.replaceAll(`"${from}"`, `"${to}"`), raw);
+const read = (key, fallback) => { try { return JSON.parse(migrate(localStorage.getItem(key))) ?? fallback; } catch { return fallback; } };
 const write = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage full or blocked */ } };
 
 function validBuild(b) {
@@ -32,7 +33,8 @@ function validBuild(b) {
 }
 const blank = () => ({ body: defaultBody(), base: empty(), breakers: zeros(), budget: 8, category: '', specialCount: 2 });
 const fromResult = r => ({ body: r.body, base: r.manual ?? r.base, breakers: r.breakers ?? zeros(),
-  budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: r.specialCount ?? r.specialUsed ?? 0, title: r.title });
+  budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: r.specialCount ?? r.specialUsed ?? 0, title: r.title,
+  savedId: r.savedId ?? null });
 
 function initialBuild() {
   const hash = location.hash.match(/#b=([^&]+)/);
@@ -47,16 +49,19 @@ function App() {
   const [view, setView] = useState(() => { const v = location.hash.match(/#\/(\w+)/)?.[1]; return VIEWS.some(([id]) => id === v) ? v : 'builder'; });
   const [library, setLibrary] = useState(() => read(KEYS.library, []).filter(b => typeof b?.id === 'string' && validBuild(b)));
   const [lab, setLab] = useState(() => ({ ...defaultLab(), ...read(KEYS.lab, {}) }));
-  const [vibes, setVibes] = useState(() => ({ ...defaultVibes(), ...read(KEYS.vibes, {}) }));
   const [compare, setCompare] = useState(() => read(KEYS.compare, []).filter(validBuild));
+  const [prefs, setPrefs] = useState(() => ({ ...defaultPrefs(), ...read(KEYS.prefs, {}) }));
+  const [searches, setSearches] = useState(() => read(KEYS.searches, []));
+  const [refTab, setRefTab] = useState('badges');
   const [toast, setToast] = useState('');
   const d = useMemo(() => derive(build), [build]);
 
   useEffect(() => write(KEYS.build, build), [build]);
   useEffect(() => write(KEYS.library, library), [library]);
   useEffect(() => write(KEYS.lab, lab), [lab]);
-  useEffect(() => write(KEYS.vibes, vibes), [vibes]);
   useEffect(() => write(KEYS.compare, compare), [compare]);
+  useEffect(() => write(KEYS.prefs, prefs), [prefs]);
+  useEffect(() => write(KEYS.searches, searches), [searches]);
   useEffect(() => { if (location.hash !== `#/${view}`) window.history.pushState(null, '', `#/${view}`); window.scrollTo({ top: 0 }); }, [view]);
   useEffect(() => {
     const onHash = () => {
@@ -93,12 +98,26 @@ function App() {
   const notify = setToast;
   const open = r => { commit({ ...blank(), ...fromResult(r) }); setView('builder'); notify('Build loaded into the Builder. Ctrl+Z to go back.'); };
   const addCompare = r => { setCompare(c => [...c, { ...fromResult(r), title: r.title ?? derive(fromResult(r)).finalName }].slice(-4)); notify('Added to Compare.'); };
+  // Saving a build that was opened from the library overwrites that entry; anything else is a new entry.
   const save = b => {
-    const item = { ...blank(), ...fromResult(b), id: crypto.randomUUID(),
+    const exists = !!b.savedId && library.some(x => x.id === b.savedId);
+    const { savedId, ...rest } = fromResult(b);
+    const item = { ...blank(), ...rest, id: exists ? savedId : crypto.randomUUID(),
       title: b.title ?? derive(fromResult(b)).finalName ?? 'Saved build', savedAt: Date.now() };
-    setLibrary(l => [item, ...l]); notify(`Saved “${item.title}”.`);
+    setLibrary(l => exists ? l.map(x => x.id === item.id ? item : x) : [item, ...l]);
+    notify(exists ? `Updated “${item.title}”.` : `Saved “${item.title}”.`);
+    return item.id;
   };
-  const findWith = (badge, tier) => { setLab(l => ({ ...l, badgeGoals: { ...l.badgeGoals, [badge]: tier } })); setView('lab'); };
+  const findWith = (badge, tier) => {
+    const key = badges.find(b => b.badge === badge)?.name;
+    setLab(l => ({ ...l, mustHave: { ...l.mustHave, [key]: tier } })); setView('lab'); notify('Added as a must-have in the Lab.');
+  };
+  const sendToLab = b => {
+    setLab(l => ({ ...l, from: { ...b }, keepBadges: true, positions: [b.body.position],
+      heights: [b.body.height - 1, b.body.height + 1],
+      breakers: { ...l.breakers, general: b.budget, special: { category: b.category } } }));
+    setView('lab'); notify('Build sent to the Lab: its badges are kept as must-haves. Widen positions/heights to find similar bodies.');
+  };
 
   return <div className="app">
     <header className="topbar">
@@ -113,13 +132,18 @@ function App() {
     <main>
       {view === 'builder' && <BuilderView build={build} setBuild={setBuild} onSave={save} notify={notify} library={library}
         undo={undoStack.current.past.length ? undo : null} redo={undoStack.current.future.length ? redo : null}
-        onOptimize={body => { setLab(l => ({ ...l, positions: [body.position], heights: [body.height, body.height] })); setView('lab'); }} />}
-      {view === 'lab' && <LabView lab={lab} setLab={setLab} onOpen={open} onCompare={addCompare} onSave={save} />}
-      {view === 'vibes' && <VibesView vibes={vibes} setVibes={setVibes} onOpen={open} onCompare={addCompare} onSave={save} />}
-      {view === 'similar' && <SimilarView build={build} library={library} onOpen={open} onCompare={addCompare} onSave={save} />}
-      {view === 'badges' && <BadgesView build={build} onFindWith={findWith} />}
+        prefs={prefs} setPrefs={setPrefs} onSendToLab={sendToLab} labCfg={lab} />}
+      {view === 'lab' && <LabView build={build} prefs={prefs} setPrefs={setPrefs} cfg={lab} setCfg={setLab} searches={searches}
+        setSearches={setSearches} notify={notify} onOpen={open} onCompare={addCompare} onSave={save} />}
+      {view === 'reference' && <>
+        <div className="toggles ref-tabs" role="group" aria-label="Reference">
+          <button className={refTab === 'badges' ? 'on' : ''} aria-pressed={refTab === 'badges'} onClick={() => setRefTab('badges')}>Badges</button>
+          <button className={refTab === 'caps' ? 'on' : ''} aria-pressed={refTab === 'caps'} onClick={() => setRefTab('caps')}>Body caps</button>
+        </div>
+        {refTab === 'badges' ? <BadgesView build={build} onFindWith={findWith} />
+          : <ExplorerView build={build} onUseBody={body => { setBuild({ body, base: empty(), breakers: zeros() }); setView('builder'); }} />}
+      </>}
       {view === 'compare' && <CompareView items={compare} setItems={setCompare} build={build} library={library} onOpen={open} />}
-      {view === 'explorer' && <ExplorerView build={build} onUseBody={body => { setBuild({ body, base: empty(), breakers: zeros() }); setView('builder'); }} />}
       {view === 'saved' && <SavedView library={library} setLibrary={setLibrary} onOpen={open} onCompare={addCompare} notify={notify} />}
     </main>
     <footer className="foot">Court Builder · independent planning tool · rules from NBA 2K HQ tuning, verified against the HQ builder.
@@ -154,7 +178,7 @@ function SavedView({ library, setLibrary, onOpen, onCompare, notify }) {
           const title = e.currentTarget.textContent.trim(); if (title) setLibrary(l => l.map(x => x.id === b.id ? { ...x, title } : x)); }}>{b.title}</h3>
           <BodyLine body={b.body} /><small className="muted">{d.finalName} · {d.unlocked.length} badges</small></div></header>
         <MiniRatings final={d.final} caps={d.caps} />
-        <footer><button className="primary" onClick={() => onOpen(b)}>Open</button><button onClick={() => onCompare(b)}>Compare</button>
+        <footer><button className="primary" onClick={() => onOpen({ ...b, savedId: b.id })}>Open</button><button onClick={() => onCompare(b)}>Compare</button>
           <button onClick={async () => { try { await navigator.clipboard.writeText(shareUrl(b)); notify('Share link copied.'); } catch { prompt('Copy this link', shareUrl(b)); } }}>Share</button>
           <button className="danger" onClick={() => setLibrary(l => l.filter(x => x.id !== b.id))}>Delete</button></footer>
       </article>; })}</div>

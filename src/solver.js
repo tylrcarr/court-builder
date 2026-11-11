@@ -3,7 +3,7 @@
 // The in-game builder requires every build to be filled to 99 Overall, so "budget" here means
 // how the 99 is spent, not how much is left over.
 import { alternatives, attributes, badgeTier, badges, capsFor, defaultBody, inHeight, ladder, mergeFloors,
-  overall, positions, resolveLinks, tiers } from './engine.js';
+  overall, overallAs, positions, resolveLinks, tiers } from './engine.js';
 
 const N = attributes.length;
 const LIMIT = 99 + 1e-8;
@@ -44,11 +44,11 @@ export function satisfy(targets, ctx, { general = 0, special = { category: '', c
   if (targets.some((t, i) => t > ctx.caps[i])) return null;
   const k = new Array(N).fill(0);
   let floors = [...targets];
+  let generalLeft = general, specialLeft = special.count ?? 0;
   let manual = floors;
   let base = clampLinks(manual, ctx.h, ctx.caps);
   let current = score(base, ctx.h);
-  let generalLeft = general, specialLeft = special.count ?? 0;
-  if (!general && !specialLeft) return pack();
+  if (!generalLeft && !specialLeft) return pack();
 
   for (let round = 0; round < general + (special.count ?? 0); round++) {
     let best = null;
@@ -84,8 +84,65 @@ export function satisfy(targets, ctx, { general = 0, special = { category: '', c
   }
 }
 
-// Spend the remaining Overall budget greedily on weighted attributes.
-export function fill(plan, weights, ctx, locked = []) {
+// Like satisfy, but plans every Cap Breaker with one archetype's gains, then raises the cheapest base ratings until the
+// build really is that archetype (its player type). Breaker gains depend on the player type — an attribute with a low
+// weight in the active archetype gains much more per breaker — so pushing the build into another archetype (e.g. an
+// 81 standing dunk on a 6'8") can make breakers elsewhere jump further. Returns null if it can't get there under 99.
+export function satisfyAs(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}, type) {
+  if (targets.some((t, i) => t > ctx.caps[i])) return null;
+  const k = new Array(N).fill(0);
+  let floors = [...targets];
+  let generalLeft = general, specialLeft = special.count ?? 0;
+  let cur = overallAs(clampLinks(floors, ctx.h, ctx.caps), ctx.h, type);
+  for (let round = 0; round < general + (special.count ?? 0); round++) {
+    let best = null;
+    for (let i = 0; i < N; i++) {
+      if (targets[i] <= 25 || k[i] >= 5) continue;
+      const useSpecial = specialLeft > 0 && isEligible(i, special);
+      if (!useSpecial && generalLeft <= 0) continue;
+      const b = baseForTarget(i, targets[i], k[i] + 1, ctx, type);
+      if (b == null || b >= floors[i]) continue;
+      const trialFloors = floors.map((f, j) => j === i ? b : f);
+      const s = overallAs(clampLinks(trialFloors, ctx.h, ctx.caps), ctx.h, type);
+      const saving = cur - s;
+      if (saving > 1e-9 && (!best || saving > best.saving)) best = { i, trialFloors, s, saving, useSpecial };
+    }
+    if (!best) break;
+    k[best.i]++; floors = best.trialFloors; cur = best.s;
+    if (best.useSpecial) specialLeft--; else generalLeft--;
+  }
+  // Make `type` the player type: raise whichever base rating closes the gap to the leading archetype fastest.
+  let manual = [...floors], base = clampLinks(manual, ctx.h, ctx.caps);
+  for (let guard = 0; guard < 300; guard++) {
+    const s = score(base, ctx.h);
+    if (s.score > LIMIT) return null;
+    if (s.playerType === type) break;
+    const gap0 = s.score - overallAs(base, ctx.h, type);
+    let best = null;
+    for (let i = 0; i < N; i++) {
+      if (base[i] >= ctx.caps[i]) continue;
+      const trialManual = manual.map((v, j) => j === i ? Math.max(v, base[j]) + 1 : v);
+      const trial = clampLinks(trialManual, ctx.h, ctx.caps);
+      const ts = score(trial, ctx.h);
+      const closed = gap0 - (ts.score - overallAs(trial, ctx.h, type));
+      const cost = ts.score - s.score;
+      if (closed > 1e-9 && (!best || closed / Math.max(1e-4, cost) > best.r)) best = { trialManual, trial, r: closed / Math.max(1e-4, cost) };
+    }
+    if (!best) return null;
+    manual = best.trialManual; base = best.trial;
+  }
+  const s = score(base, ctx.h);
+  if (s.playerType !== type || s.score > LIMIT) return null;
+  const final = finalsFor(base, k, ctx);
+  if (final.some((v, i) => v < targets[i])) return null;
+  return { manual: [...manual], base, breakers: [...k], final, ovr: s.score, playerType: s.playerType,
+    generalUsed: general - generalLeft, specialUsed: (special.count ?? 0) - specialLeft };
+}
+
+// Spend the remaining Overall budget greedily on weighted attributes. ceiling: highest base per attribute (a number
+// or an array). floors (optional): final ratings that
+// must keep holding — raising one rating can change the player type and shrink Cap Breaker gains elsewhere.
+export function fill(plan, weights, ctx, locked = [], floors = null, ceiling = 99) {
   let manual = [...plan.manual];
   let base = clampLinks(manual, ctx.h, ctx.caps);
   let ovr = score(base, ctx.h).score;
@@ -95,14 +152,18 @@ export function fill(plan, weights, ctx, locked = []) {
     for (let guard = 0; guard < 400; guard++) {
       let best = null;
       for (const i of active) {
-        if (base[i] >= ctx.caps[i]) continue;
+        const top = Math.min(ctx.caps[i], Array.isArray(ceiling) ? ceiling[i] : ceiling);
+        if (base[i] >= top) continue;
         const trialManual = [...manual];
-        trialManual[i] = Math.min(ctx.caps[i], Math.max(manual[i], base[i]) + step);
+        trialManual[i] = Math.min(top, Math.max(manual[i], base[i]) + step);
         const trial = clampLinks(trialManual, ctx.h, ctx.caps);
         const s = score(trial, ctx.h).score;
         if (s > LIMIT) continue;
+        if (floors && finalsFor(trial, plan.breakers, ctx).some((v, j) => v < floors[j])) continue;
+        // Count what the final ratings gain (a base raise that only squashes a Cap Breaker's gain is worth nothing).
+        const before = finalsFor(base, plan.breakers, ctx), after = finalsFor(trial, plan.breakers, ctx);
         let gain = 0;
-        for (let j = 0; j < N; j++) gain += weights[j] * (trial[j] - base[j]);
+        for (let j = 0; j < N; j++) gain += weights[j] * (after[j] - before[j]);
         const value = gain / Math.max(1e-4, s - ovr);
         if (gain > 0 && (!best || value > best.value)) best = { trialManual, trial, s, value };
       }

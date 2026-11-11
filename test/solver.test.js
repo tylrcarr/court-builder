@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { assess, attributes, badges, badgeTier, capsFor, resolveLinks, tiers } from '../src/engine.js';
 import { search } from '../src/solver.js';
 import { maximizeBadges } from '../src/tune.js';
-import { parseVibes, vibesToSearch } from '../src/vibes.js';
 import { derive } from '../src/ui/derive.js';
 
 const badge = name => badges.find(b => b.name === name);
@@ -34,15 +33,6 @@ test('badge maximizer never loses a badge tier and stays at 99', () => {
   assert.ok(points >= before.badgePoints);
   for (const u of before.unlocked) assert.ok(tiers.indexOf(badgeTier(u.badge, d.final, r.body.height)) >= tiers.indexOf(u.tier), u.badge.name);
   assert.ok(d.state.fits);
-});
-
-test('vibes parse plain language, including typos and intensity words', () => {
-  const sel = parseVibes('I want to shoot, score inside with close shot, rebound and pass with good speed and gility and perimeter defense');
-  assert.deepEqual(Object.keys(sel).sort(), ['agility', 'closeshot', 'passing', 'perimeterd', 'rebounding', 'sniper', 'speed']);
-  assert.deepEqual(parseVibes('elite lockdown defender who can knock down threes and some rebounding'),
-    { perimeterd: 'elite', sniper: 'elite', rebounding: 'nice' });
-  const { weights } = vibesToSearch(sel);
-  assert.ok(weights[attributes.find(a => a.name === 'agility').index] > 1);
 });
 
 test('share links round-trip a build', async () => {

@@ -1,0 +1,6 @@
+[
+ {"body":{"position":"SF","height":80,"weight":241,"wingspan":82},"base":[77,85,25,81,51,91,67,67,80,86,75,80,82,59,78,80,87,84,79,76,75],"breakers":[0,0,0,0,0,2,5,0,0,0,0,0,0,5,0,0,0,0,0,0,0],"budget":7,"category":"shooting","specialCount":2,"title":"glitchy cap breakers","id":"ce5026d8-7c61-4386-a50a-5f5b31b99b1b","savedAt":1794418800801},
+ {"body":{"position":"PF","height":83,"weight":236,"wingspan":89},"base":[74,71,89,64,55,68,78,83,89,70,64,80,72,42,84,89,94,75,66,84,80],"breakers":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"budget":7,"category":"shooting","specialCount":2,"title":"big man","id":"fa5eafd4-9cd4-4fda-b6d7-4a20a25f1183","savedAt":1794407325118},
+ {"body":{"position":"PF","height":81,"weight":244,"wingspan":85},"base":[25,65,82,25,84,85,83,64,79,80,61,71,75,83,84,80,90,80,76,76,80],"breakers":[0,0,5,0,0,2,0,0,1,0,1,0,0,0,0,0,0,0,0,0,0],"budget":7,"category":"shooting","specialCount":2,"title":"pf middy","id":"9c656d5e-53a2-42a0-b55e-71651fee6394","savedAt":1794407195494},
+ {"body":{"position":"C","height":82,"weight":232,"wingspan":83},"base":[75,50,87,25,74,90,89,83,89,78,68,80,82,52,84,25,87,77,71,76,75],"breakers":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"budget":8,"category":"","specialCount":2,"title":"Glass-Cleaning PlayShot · C 6′10″","id":"355ccf36-e0e3-4341-af9a-97a76a395930","savedAt":1794405685788}
+]

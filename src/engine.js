@@ -88,6 +88,21 @@ export function overall(ratings, height) {
   return { score: best, playerType };
 }
 
+// Score of one archetype (the build's Overall is the best of these; that archetype is its player type).
+export function overallAs(ratings, height, type) {
+  const [[low, high], [start, end]] = data.lerp[height - 64];
+  const weights = data.weights[height][type];
+  let numerator = 0, denominator = 0;
+  for (let i = 0; i < ratings.length; i++) {
+    const weight = weights[i] * (data.scales[i][ratings[i]] ?? 1);
+    numerator += weight * ratings[i];
+    denominator += weight;
+  }
+  return start + (numerator / denominator - low) * (end - start) / (high - low);
+}
+export const playerTypeCount = height => data.weights[height].length;
+export const typeWeights = (height, type) => data.weights[height][type];
+
 export function assess(ratings, height, caps) {
   const { score, playerType } = overall(ratings, height);
   const limit = 99;
