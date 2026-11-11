@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { badges, badgeTier, empty, feet, inHeight, name, overall, tiers } from '../engine.js';
 import { cheapestBadge } from '../solver.js';
 import costs from '../badge-costs.json' with { type: 'json' };
-import { derive } from './derive.js';
+import { derive } from '../derive.js';
 import { TierPill, disciplineColour, label, requirementText } from './common.jsx';
 
 export const tokenCost = (badge, tier, height) => {

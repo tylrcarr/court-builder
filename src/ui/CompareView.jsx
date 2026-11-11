@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { attributes, badges, name, tiers } from '../engine.js';
-import { derive, groups } from './derive.js';
+import { derive, groups } from '../derive.js';
 import { BodyLine, TierPill, disciplineColour, label, ratingTone } from './common.jsx';
 
 export default function CompareView({ items, setItems, build, library, onOpen }) {

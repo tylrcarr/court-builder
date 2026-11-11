@@ -1,6 +1,6 @@
 # Court Builder
 
-A local NBA 2K27 MyPLAYER build lab: hand-tune builds, or let the solver find optimized builds for the
+A local NBA 2K27 MyPLAYER build lab: hand-tune builds, or let the badge-first optimizer find builds for the
 badges and playstyle you want. Everything runs in the browser with bundled data.
 
 ## Run
@@ -9,58 +9,81 @@ Node 22.12+ (26 recommended) and pnpm.
 
     pnpm install
     pnpm dev          # http://localhost:5173
-    pnpm test         # rules + HQ regression tests
+    pnpm test         # rules, optimizer and HQ regression tests
     pnpm build        # production bundle in dist/
 
-In IntelliJ IDEA, open the folder and use the `dev` / `test` npm scripts from the package.json gutter.
+In IntelliJ IDEA, open the folder and run the `dev` / `test` scripts from package.json. IDE settings (`.idea/`)
+are machine-specific and not committed.
+
+## How the optimizer thinks
+
+Most of a good build's Overall budget should sit exactly on badge breakpoints: a rating one point above the last
+tier it unlocks buys nothing. The Lab optimizes **badge-first**:
+
+1. **Musts** — badge tiers every result must reach (bodies that can't are skipped).
+2. **Badge value** — every other badge has an importance (Don't care → Core) and an optional "up to" tier cap;
+   badges left on Auto are weighted by a meta tier list (`src/meta.js`, a documented judgement call).
+3. **Feel attributes** — ratings worth raising for their own sake (ball handle, speed, agility by default) get
+   whatever budget is left.
+
+Cap Breakers are planned per archetype: breaker gains depend on the build's player type, so the solver can push a
+build into a different archetype when that makes breakers elsewhere go further. Every result is filled to 99
+Overall, as the game requires.
 
 ## Features
 
-- **Builder** — position, height, weight and wingspan; attribute sliders with linked minimums, body caps and the
-  99 Overall budget; per-attribute +1 Overall cost; Cap Breaker ladders; locks with **auto-fill** to 99; live
-  build name; badges unlocked by tier and **badges within reach**; undo/redo (Ctrl+Z / Ctrl+Y); share links,
-  text export and saving.
-- **Build Lab** — pick badges (any tier), priorities (0–4 stars) and optional minimums, positions, a height range
-  and Cap Breakers. The solver tries every legal body, meets the requirements with the fewest Overall points
-  (choosing the cheapest OR-branch of each badge and spending breakers where they save the most), then fills to
-  99 toward your priorities. Presets for common archetypes; results sortable and filterable.
-- **Vibes** — describe a playstyle in plain words ("shoot, score inside with close shot, rebound, pass, speed,
-  agility and perimeter defense") or click vibe chips (nice / good / elite). Typos are tolerated.
-- **Find Similar** — keep a build's top strengths within a tolerance and find the closest rating profile on
-  other bodies (taller, faster, longer…), with a match score.
-- **Badges** — all 53 badges with official tier requirements, height ranges, your current tier, badge token
-  costs, and the cheapest share of the Overall budget each tier needs on your body. One click sends a badge to
-  the Lab.
-- **Compare** — up to four builds side by side with best-in-row highlights and a badge tier matrix.
-- **Caps** — heatmap of every cap at every height for a position and frame, plus weight and wingspan sweeps.
+- **Build Lab**
+  - Role presets (inside big, stretch big, lockdown, generalist wing, slasher, scorer, playmaker, point guard).
+  - Mode (5v5 / 3v3 / both) and meta strength.
+  - Positions, a height range and Cap Breakers (have now / expect later) plus a specialization.
+  - Per-badge musts, importance and tier caps; animation unlocks (contact dunks, alley-oops) as goals.
+  - Per-attribute feel, minimums and maximums.
+  - Results show badges, meta score and breakers. Variations (faster, more playmaking, better defense, no
+    dunking…) keep results from all being the same build.
+  - "What's blocking it" explains searches with no results. Searches can be saved.
+- **Builder**
+  - Body controls, attribute sliders with linked minimums, body caps and the 99 Overall budget, and Cap Breaker
+    ladders.
+  - Locks, auto-fill, undo/redo (Ctrl+Z / Ctrl+Y).
+  - **Breakpoints** panel with **Trim dead points**: lowers ratings to their last breakpoint and reinvests the
+    budget in feel attributes.
+  - **Within reach** badges with one-click unlock (trades budget without losing a badge), **Maximize** badges,
+    trade-offs and options for this body, and nearby bodies.
+  - Live build name, share links, text export, save.
+- **Reference** — all 53 badges with official tier requirements, height ranges, token costs and the cheapest share
+  of the Overall budget each tier needs on your body; plus a caps heatmap for every height with weight and
+  wingspan sweeps.
+- **Compare** — up to four builds side by side, best-in-row highlights, badge tier matrix.
 - **Saved** — library with rename, share links, JSON export/import.
 
 ## Accuracy and provenance
 
-Rules come from NBA 2K HQ (the official companion app, `com.VisualConcepts.MyNBASherpa`) and are checked against
-HQ's own MyPLAYER builder, which matches the game.
+Rules come from NBA 2K HQ (the official companion app) and are checked against HQ's own MyPLAYER builder, which
+matches the game.
 
-- **Caps** use 2K's formula `25 + 74 × height × weight × wingspan` multipliers (2K HQ research dataset). Every
-  body read from the HQ builder so far matches all 21 caps.
-- **Overall** uses the native weighted formula with per-archetype weights and rating scales (matches 256 mixed and
-  75 uniform HQ vectors).
-- **Linked minimums** are decoded directly from the tuning blob shipped in the HQ app
-  (`tools/decode-links.mjs`). The named tuning export maps link rows one inch too tall and mislabels some targets;
-  the decoded table fixes both and reproduces every clean HQ probe on all 21 ratings
-  (`test/hq-link-probes.json`).
-- **Badges** use the official tier requirements and height ranges (HQ native probe). Spot checks against NBA2KLab
-  (Arc Cadence, Wall Up, Set and Fire) match exactly; HQ also covers tiers NBA2KLab has not published.
-- **Cap Breakers** raise a rating toward its body cap but never past it; gains follow the decoded weights and
-  replay all published HQ ladders.
+- **Caps** use 2K's formula `25 + 74 × height × weight × wingspan` multipliers. Every body read from the HQ
+  builder so far matches all 21 caps.
+- **Overall** uses the native per-archetype weighted formula (matches 256 mixed and 75 uniform HQ vectors).
+- **Linked minimums** are decoded directly from the tuning blob in the HQ app (`tools/decode-links.mjs`). The
+  named tuning export maps link rows one inch too tall and mislabels some targets; the decoded table fixes both
+  and reproduces every clean HQ probe on all 21 ratings (`test/hq-link-probes.json`).
+- **Badges** use the official tier requirements and height ranges; spot checks against NBA2KLab match exactly.
+  Animation requirements come from NBA2KLab's 2K27 contact dunk / alley-oop table.
+- **Cap Breakers** raise a rating toward its body cap but never past it. A specialization grants two specialized
+  breakers once its base-rating requirements are met.
 - Build names use BASELINE's public naming catalog and are labelled as predictions.
 
-Open questions: whether a linked minimum that would exceed a cap is clamped before or after it cascades (no
-observation distinguishes them yet), and the purpose of the region of the tuning blob that changed since August.
+Open question: whether a linked minimum that would exceed a cap is clamped before or after it cascades (no
+observation distinguishes them yet).
 
-## Research tooling
+## Layout
 
-- `tools/hq/` drives the HQ builder on an Android emulator (adb taps, Windows OCR, glyph templates for the body
-  wheels) to read caps and linked values: `run-links.mjs`, `analyze-links.mjs`, `derive-corrections.mjs`.
-- `tools/decode-links.mjs` decodes the link table from the app's tuning asset.
-- `tools/ui-check.mjs` exercises the UI in headless Chrome and saves screenshots.
-- `research/` holds the HQ dataset snapshot and observations. APKs and third-party data are git-ignored.
+- `src/engine.js` — caps, links, Overall, breaker ladders, badge tiers (game rules only).
+- `src/derive.js` — everything the UI shows about one build, computed in one place.
+- `src/solver.js`, `src/breakpoints.js`, `src/tune.js` — optimizer, breakpoint logic, local tuning.
+- `src/meta.js`, `src/roles.js`, `src/variants.js`, `src/animations.js` — Lab presets and opinionated weights.
+- `src/ui/` — React views.
+- `tools/hq/` — drives the HQ builder on an Android emulator (adb, Windows OCR, glyph templates) to verify rules.
+- `tools/decode-links.mjs` — decodes the link table from the app's tuning asset.
+- `tools/ui-check.mjs` — exercises the UI in headless Chrome and saves screenshots.
+- `research/` — HQ dataset snapshot and observations. APKs and third-party data are git-ignored.

@@ -3,7 +3,7 @@
 import { assess, attributes, badgeTier, capsFor, ladder, lowerLinkedRatings, resolveLinks, tiers } from './engine.js';
 import { fill } from './solver.js';
 import { BASE_CEILING, badgeValue, deadWeight, feelFor, nextBreakpoint, specMinimums } from './breakpoints.js';
-import { derive, nearBadges } from './ui/derive.js';
+import { derive, nearBadges } from './derive.js';
 
 const choose = (values, i, v) => values.map((old, j) => j === i ? v : old);
 

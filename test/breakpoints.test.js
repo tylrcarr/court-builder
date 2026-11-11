@@ -5,7 +5,7 @@ import { autoFeel, bodiesFor, deadWeight, defaultPrefs, feelFor, heldTiers, live
   specUnlocked } from '../src/breakpoints.js';
 import { decodeBuild } from '../src/share.js';
 import { trimDeadWeight } from '../src/tune.js';
-import { derive } from '../src/ui/derive.js';
+import { derive } from '../src/derive.js';
 
 const rank = t => t ? tiers.indexOf(t) + 1 : 0;
 import { DEFAULT_CONTINUOUS, goals } from '../src/breakpoints.js';

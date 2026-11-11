@@ -5,7 +5,7 @@ import { META_CAPS, metaOf } from '../meta.js';
 import { VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
 import { MODES, ROLES, applyRole, withMode } from '../roles.js';
-import { derive, groups, tierShort } from './derive.js';
+import { derive, groups, tierShort } from '../derive.js';
 import { BodyLine, HeightRange, MiniRatings, NumberInput, PositionToggles, Select, TierPill, disciplineColour, label,
   requirementText } from './common.jsx';
 

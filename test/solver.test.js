@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { assess, attributes, badges, badgeTier, capsFor, resolveLinks, tiers } from '../src/engine.js';
 import { search } from '../src/solver.js';
 import { maximizeBadges } from '../src/tune.js';
-import { derive } from '../src/ui/derive.js';
+import { derive } from '../src/derive.js';
 
 const badge = name => badges.find(b => b.name === name);
 const filledTo99 = (base, body) => {

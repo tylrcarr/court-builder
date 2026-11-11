@@ -3,10 +3,10 @@ import { RENAMED } from './animations.js';
 import { createRoot } from 'react-dom/client';
 import { attributes, badges, defaultBody, empty, feet, positions } from './engine.js';
 import { decodeBuild, shareUrl } from './share.js';
-import { derive, zeros } from './ui/derive.js';
+import { derive, zeros } from './derive.js';
 import { BodyLine, MiniRatings } from './ui/common.jsx';
 import BuilderView from './ui/BuilderView.jsx';
-import { defaultPrefs } from './breakpoints.js';
+import { MAX_SPECIALIZED, defaultPrefs } from './breakpoints.js';
 import LabView, { defaultLab } from './ui/LabView.jsx';
 import BadgesView from './ui/BadgesView.jsx';
 import CompareView from './ui/CompareView.jsx';
@@ -31,9 +31,9 @@ function validBuild(b) {
   return row && b.body.weight >= row.minWeight && b.body.weight <= row.maxWeight && b.body.wingspan >= row.minWingspan
     && b.body.wingspan <= row.maxWingspan && vec(b.base, 25, 99) && vec(b.breakers ?? zeros(), 0, 5);
 }
-const blank = () => ({ body: defaultBody(), base: empty(), breakers: zeros(), budget: 8, category: '', specialCount: 2 });
+const blank = () => ({ body: defaultBody(), base: empty(), breakers: zeros(), budget: 8, category: '', specialCount: 0 });
 const fromResult = r => ({ body: r.body, base: r.manual ?? r.base, breakers: r.breakers ?? zeros(),
-  budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: r.specialCount ?? r.specialUsed ?? 0, title: r.title,
+  budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: (r.category ?? '') ? MAX_SPECIALIZED : 0, title: r.title,
   savedId: r.savedId ?? null });
 
 function initialBuild() {

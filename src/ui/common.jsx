@@ -1,6 +1,6 @@
 import React, { useLayoutEffect, useState } from 'react';
 import { attributes, feet, name, positions } from '../engine.js';
-import { groups, tierLabel, tierShort } from './derive.js';
+import { groups, tierLabel, tierShort } from '../derive.js';
 
 export const label = key => key === 'hall_of_fame' ? 'Hall of Fame' : name(key);
 export const SHORT = {

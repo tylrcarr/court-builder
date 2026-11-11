@@ -1,11 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
 import { maximizeBadges, trimDeadWeight, unlockTier } from '../tune.js';
-import { BASE_CEILING, DEFAULT_CONTINUOUS, SPECIALIZATIONS, autoFeel, byName, deadWeight, feelFor, goals, heldTiers, nextBreakpoint, objective, valueOf } from '../breakpoints.js';
+import { BASE_CEILING, DEFAULT_CONTINUOUS, MAX_SPECIALIZED, SPECIALIZATIONS, autoFeel, byName, deadWeight, feelFor, goals, heldTiers, nextBreakpoint, objective, valueOf } from '../breakpoints.js';
 import { META_OPTION, PlanCard, TemplateCard, optimizerOptions, pickOptions, useOptimize, usePool } from './LabView.jsx';
 import { VARIANTS as DIRECTIONS } from '../variants.js';
 import { capsFor } from '../engine.js';
-import { derive, groups, nearBadges, tierShort, zeros } from './derive.js';
+import { derive, groups, nearBadges, tierShort, zeros } from '../derive.js';
 import { Bar, NumberInput, Select, TierPill, disciplineColour, label, ratingTone, requirementText } from './common.jsx';
 import { shareUrl } from '../share.js';
 
@@ -218,7 +218,7 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
             <label className="field compact"><span>General</span><NumberInput title="General breakers" value={build.budget} min={0} max={105}
               onChange={v => setBuild({ budget: v })} /></label>
             <Select compact title="Specialization" value={build.category}
-              options={[['', 'None'], ...groups.map(g => [g, name(g)])]} onChange={v => setBuild({ category: v, specialCount: v ? 2 : 0 })} />
+              options={[['', 'None'], ...groups.map(g => [g, name(g)])]} onChange={v => setBuild({ category: v, specialCount: v ? MAX_SPECIALIZED : 0 })} />
           </div>
           {d.overBudget && <p className="warn small">Using more general breakers than your pool.</p>}
           {build.category && !d.specOk && <p className="warn small">{name(build.category)} specialization is locked: needs {Object.entries(spec?.minimums ?? {})

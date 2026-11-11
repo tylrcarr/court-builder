@@ -1,6 +1,6 @@
-import { assess, attributes, badges, badgeTier, capsFor, inHeight, ladder, resolveLinks, tiers } from '../engine.js';
-import { buildName } from '../build-name.js';
-import { MAX_SPECIALIZED, specUnlocked } from '../breakpoints.js';
+import { assess, attributes, badges, badgeTier, capsFor, inHeight, ladder, resolveLinks, tiers } from './engine.js';
+import { buildName } from './build-name.js';
+import { MAX_SPECIALIZED, specUnlocked } from './breakpoints.js';
 
 export const zeros = () => attributes.map(() => 0);
 export const groups = [...new Set(attributes.map(a => a.discipline))];
@@ -8,7 +8,8 @@ export const tierLabel = t => t === 'hall_of_fame' ? 'Hall of Fame' : t ? t[0].t
 export const tierShort = t => ({ bronze: 'B', silver: 'S', gold: 'G', hall_of_fame: 'HoF' })[t] ?? '–';
 
 // Everything the UI needs about a build, computed in one place.
-export function derive({ body, base, breakers = zeros(), budget = 0, category = '', specialCount = 0 }) {
+// Specialization always grants MAX_SPECIALIZED (2) breakers once unlocked, so builds carry no specialized count.
+export function derive({ body, base, breakers = zeros(), budget = 0, category = '' }) {
   const caps = capsFor(body);
   const ratings = resolveLinks(base, body.height).map((v, i) => Math.min(v, caps[i]));
   const state = assess(ratings, body.height, caps);
