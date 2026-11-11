@@ -57,7 +57,7 @@ function App() {
   useEffect(() => write(KEYS.lab, lab), [lab]);
   useEffect(() => write(KEYS.vibes, vibes), [vibes]);
   useEffect(() => write(KEYS.compare, compare), [compare]);
-  useEffect(() => { if (location.hash !== `#/${view}`) history.pushState(null, '', `#/${view}`); window.scrollTo({ top: 0 }); }, [view]);
+  useEffect(() => { if (location.hash !== `#/${view}`) window.history.pushState(null, '', `#/${view}`); window.scrollTo({ top: 0 }); }, [view]);
   useEffect(() => {
     const onHash = () => {
       const shared = location.hash.match(/#b=([^&]+)/);
@@ -70,17 +70,17 @@ function App() {
   }, []);
   useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(''), 3200); return () => clearTimeout(t); }, [toast]);
 
-  const history = useRef({ past: [], future: [] });
+  const undoStack = useRef({ past: [], future: [] });
   const [, bump] = useState(0);
   const commit = next => setBuildState(b => {
     const value = typeof next === 'function' ? next(b) : next;
-    if (value !== b) { history.current.past = [...history.current.past.slice(-99), b]; history.current.future = []; bump(n => n + 1); }
+    if (value !== b) { undoStack.current.past = [...undoStack.current.past.slice(-99), b]; undoStack.current.future = []; bump(n => n + 1); }
     return value;
   });
   const setBuild = patch => commit(b => ({ ...b, ...patch }));
-  const undo = () => setBuildState(b => { const h = history.current; if (!h.past.length) return b;
+  const undo = () => setBuildState(b => { const h = undoStack.current; if (!h.past.length) return b;
     h.future = [b, ...h.future]; const prev = h.past[h.past.length - 1]; h.past = h.past.slice(0, -1); bump(n => n + 1); return prev; });
-  const redo = () => setBuildState(b => { const h = history.current; if (!h.future.length) return b;
+  const redo = () => setBuildState(b => { const h = undoStack.current; if (!h.future.length) return b;
     h.past = [...h.past, b]; const next = h.future[0]; h.future = h.future.slice(1); bump(n => n + 1); return next; });
   useEffect(() => {
     const onKey = e => {
@@ -112,7 +112,8 @@ function App() {
     </header>
     <main>
       {view === 'builder' && <BuilderView build={build} setBuild={setBuild} onSave={save} notify={notify} library={library}
-        undo={history.current.past.length ? undo : null} redo={history.current.future.length ? redo : null} />}
+        undo={undoStack.current.past.length ? undo : null} redo={undoStack.current.future.length ? redo : null}
+        onOptimize={body => { setLab(l => ({ ...l, positions: [body.position], heights: [body.height, body.height] })); setView('lab'); }} />}
       {view === 'lab' && <LabView lab={lab} setLab={setLab} onOpen={open} onCompare={addCompare} onSave={save} />}
       {view === 'vibes' && <VibesView vibes={vibes} setVibes={setVibes} onOpen={open} onCompare={addCompare} onSave={save} />}
       {view === 'similar' && <SimilarView build={build} library={library} onOpen={open} onCompare={addCompare} onSave={save} />}

@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { assess, attributes, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
+import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
 import { fill } from '../solver.js';
 import { capsFor } from '../engine.js';
 import { derive, groups, nearBadges, zeros } from './derive.js';
@@ -8,7 +8,7 @@ import { shareUrl } from '../share.js';
 
 const choose = (values, i, v) => values.map((old, j) => j === i ? v : old);
 
-export default function BuilderView({ build, setBuild, onSave, notify, library, undo, redo }) {
+export default function BuilderView({ build, setBuild, onSave, notify, library, undo, redo, onOptimize }) {
   const { body, base, breakers } = build;
   const d = useMemo(() => derive(build), [build]);
   const [locks, setLocks] = useState(() => attributes.map(() => false));
@@ -61,6 +61,39 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
     if ((trial.fits || lowering) && value !== d.ratings[i]) setBuild({ base: next });
     if (blocked) notify(`${name(attributes[i].name)} is limited by the 99 Overall budget.`);
     return !blocked;
+  }
+  function getBadge(n) {
+    let next = base;
+    for (const g of n.gaps) next = choose(next, g.attribute, Math.max(next[g.attribute], g.need));
+    let trial = assess(resolveLinks(next, body.height), body.height, d.caps);
+    if (!trial.withinCaps) return notify("That tier is above this body's caps.");
+    // Budget full: trim other attributes, cheapest-to-lose first, without dropping any badge tier you already have.
+    const protect = new Set(n.gaps.map(g => g.attribute));
+    const keep = d.unlocked.map(u => [u.badge, tiers.indexOf(u.tier)]);
+    const trimmed = {};
+    for (let guard = 0; !trial.fits && guard < 300; guard++) {
+      let best = null;
+      for (let i = 0; i < next.length; i++) {
+        if (protect.has(i) || locks[i] || next[i] <= 25) continue;
+        const cand = lowerLinkedRatings(next, body.height, i, next[i] - 1);
+        const resolved = resolveLinks(cand, body.height);
+        const fin = resolved.map((r, j) => r + d.ladders[j].slice(0, d.applied[j]).reduce((s2, g) => s2 + g, 0));
+        if (n.gaps.some(g => resolved[g.attribute] < g.need)) continue;
+        if (keep.some(([badge, t]) => tiers.indexOf(badgeTier(badge, fin, body.height)) < t)) continue;
+        const sc = assess(resolved, body.height, d.caps);
+        const saving = trial.score - sc.score;
+        if (saving > 0 && (!best || saving > best.saving)) best = { cand, sc, saving, i };
+      }
+      if (!best) break;
+      next = best.cand; trial = best.sc; trimmed[best.i] = (trimmed[best.i] ?? 0) + 1;
+    }
+    if (!trial.fits) return notify(`Can't fit ${label(n.badge.name)} ${label(n.tier)} without losing a badge you have. Unlock an attribute or lower something.`);
+    // Spend whatever the trade freed so the build stays filled to 99.
+    const weights = attributes.map((_, i) => locks[i] ? 0 : Math.max(0.05, (d.ratings[i] - 25) / 74) ** 2);
+    next = fill({ manual: next, breakers: d.applied }, weights, { body, h: body.height, caps: d.caps }, locks).manual;
+    setBuild({ base: next });
+    const traded = Object.entries(trimmed).map(([i, k]) => `${name(attributes[i].name)} −${k}`).join(', ');
+    notify(`Unlocked ${label(n.badge.name)} ${label(n.tier)}${traded ? ' by trading ' + traded : ''}. Ctrl+Z to undo.`);
   }
   function autoFill(mode) {
     const weights = attributes.map((a, i) => locks[i] ? 0 : mode === 'even' ? 1 : Math.max(0.05, (d.ratings[i] - 25) / 74) ** 2);
@@ -174,9 +207,11 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
         {near.length > 0 && <section className="card">
           <h3>Within reach</h3>
           <ul className="near">{near.map(n => <li key={n.badge.badge}>
-            <span>{label(n.badge.name)} <TierPill tier={n.tier} small /></span>
+            <span>{label(n.badge.name)} <TierPill tier={n.tier} small />
+              <button className="mini-btn" onClick={() => getBadge(n)} title="Raise the needed attributes">Get it</button></span>
             <small>{n.gaps.map(g => `${name(g.name)} +${g.gap}`).join(', ')}</small></li>)}</ul>
         </section>}
+        <button className="optimize" onClick={() => onOptimize(body)}>Optimize this body in the Lab →</button>
         <section className="card">
           <h3>Save & share</h3>
           <input type="text" placeholder="Build title (optional)" value={title} maxLength={80} onChange={e => setTitle(e.target.value)} />
