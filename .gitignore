@@ -6,3 +6,6 @@ dist/
 .env*
 research/apk/
 research/third-party/
+research/codex-handoff.md
+research/hq-observations/link-candidates.json
+research/hq-observations/link-verdicts.json
