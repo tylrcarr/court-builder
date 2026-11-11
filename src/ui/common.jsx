@@ -77,6 +77,7 @@ export function ResultCard({ result, rank, highlight = [], requested = [], onOpe
       <div className="result-stats">
         <span title="Badge tiers unlocked">{d.unlocked.length}<small>badges</small></span>
         <span title="Cap Breakers in this plan">{d.breakerCount}<small>breakers</small></span>
+        {result.polished > 0 && <span title="Badge tiers added by badge polish">+{result.polished}<small>polished</small></span>}
         {result.similarity != null && <span title="Similarity">{Math.round(result.similarity * 100)}%<small>match</small></span>}
       </div>
     </header>
@@ -153,7 +154,7 @@ export function useSearch() {
 }
 
 export function SearchStatus({ state, noun = 'builds' }) {
-  if (state.running) return <p className="status-line"><span className="spinner" />Searching bodies…
+  if (state.running) return <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Searching bodies'}…
     {state.progress && ` ${state.progress.done}/${state.progress.total}`}</p>;
   if (state.error) return <p className="status-line warn">{state.error}</p>;
   if (state.result) return <p className="status-line">Checked {state.result.frames.toLocaleString()} bodies

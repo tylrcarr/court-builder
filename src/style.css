@@ -279,3 +279,4 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .results-bar input[type=search] { flex: 1; min-width: 220px; max-width: 420px; }
 .mini-btn { padding: 0 .45rem; font-size: .7rem; margin-left: 6px; }
 .optimize { width: 100%; justify-content: center; margin-top: 14px; background: rgba(255, 90, 31, .1); border-color: rgba(255, 90, 31, .45); color: var(--accent2); font-weight: 700; }
+.row-head { display: flex; justify-content: space-between; align-items: baseline; }

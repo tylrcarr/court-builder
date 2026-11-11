@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
 import { fill } from '../solver.js';
+import { maximizeBadges, unlockTier } from '../tune.js';
 import { capsFor } from '../engine.js';
 import { derive, groups, nearBadges, zeros } from './derive.js';
 import { Bar, NumberInput, Select, TierPill, disciplineColour, label, ratingTone, requirementText } from './common.jsx';
@@ -63,37 +64,18 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
     return !blocked;
   }
   function getBadge(n) {
-    let next = base;
-    for (const g of n.gaps) next = choose(next, g.attribute, Math.max(next[g.attribute], g.need));
-    let trial = assess(resolveLinks(next, body.height), body.height, d.caps);
-    if (!trial.withinCaps) return notify("That tier is above this body's caps.");
-    // Budget full: trim other attributes, cheapest-to-lose first, without dropping any badge tier you already have.
-    const protect = new Set(n.gaps.map(g => g.attribute));
-    const keep = d.unlocked.map(u => [u.badge, tiers.indexOf(u.tier)]);
-    const trimmed = {};
-    for (let guard = 0; !trial.fits && guard < 300; guard++) {
-      let best = null;
-      for (let i = 0; i < next.length; i++) {
-        if (protect.has(i) || locks[i] || next[i] <= 25) continue;
-        const cand = lowerLinkedRatings(next, body.height, i, next[i] - 1);
-        const resolved = resolveLinks(cand, body.height);
-        const fin = resolved.map((r, j) => r + d.ladders[j].slice(0, d.applied[j]).reduce((s2, g) => s2 + g, 0));
-        if (n.gaps.some(g => resolved[g.attribute] < g.need)) continue;
-        if (keep.some(([badge, t]) => tiers.indexOf(badgeTier(badge, fin, body.height)) < t)) continue;
-        const sc = assess(resolved, body.height, d.caps);
-        const saving = trial.score - sc.score;
-        if (saving > 0 && (!best || saving > best.saving)) best = { cand, sc, saving, i };
-      }
-      if (!best) break;
-      next = best.cand; trial = best.sc; trimmed[best.i] = (trimmed[best.i] ?? 0) + 1;
-    }
-    if (!trial.fits) return notify(`Can't fit ${label(n.badge.name)} ${label(n.tier)} without losing a badge you have. Unlock an attribute or lower something.`);
-    // Spend whatever the trade freed so the build stays filled to 99.
-    const weights = attributes.map((_, i) => locks[i] ? 0 : Math.max(0.05, (d.ratings[i] - 25) / 74) ** 2);
-    next = fill({ manual: next, breakers: d.applied }, weights, { body, h: body.height, caps: d.caps }, locks).manual;
-    setBuild({ base: next });
-    const traded = Object.entries(trimmed).map(([i, k]) => `${name(attributes[i].name)} −${k}`).join(', ');
+    const result = unlockTier(build, n, locks);
+    if (result.error) return notify(`Can't unlock ${label(n.badge.name)} ${label(n.tier)}: ${result.error}`);
+    setBuild({ base: result.base });
+    const traded = Object.entries(result.trimmed).map(([i, k]) => `${name(attributes[i].name)} −${k}`).join(', ');
     notify(`Unlocked ${label(n.badge.name)} ${label(n.tier)}${traded ? ' by trading ' + traded : ''}. Ctrl+Z to undo.`);
+  }
+  function maxBadges() {
+    const before = d.badgePoints;
+    const result = maximizeBadges(build, locks);
+    if (!result.gained.length) return notify('No badge upgrades fit without losing something. Try unlocking attributes.');
+    setBuild({ base: result.build.base });
+    notify(`+${result.points - before} badge tier points: ${result.gained.map(g => label(g.split(' ')[0])).join(', ')}. Ctrl+Z to undo.`);
   }
   function autoFill(mode) {
     const weights = attributes.map((a, i) => locks[i] ? 0 : mode === 'even' ? 1 : Math.max(0.05, (d.ratings[i] - 25) / 74) ** 2);
@@ -197,7 +179,8 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
           {d.overBudget && <p className="warn small">Using more general breakers than your pool.</p>}
         </section>
         <section className="card">
-          <h3>Badges unlocked <span className="count">{d.unlocked.length}</span></h3>
+          <div className="row-head"><h3>Badges unlocked <span className="count">{d.unlocked.length}</span></h3>
+            <button className="mini-btn" onClick={maxBadges} title="Trade budget for more badge tiers without losing any">Maximize</button></div>
           <div className="unlocked">{tiers.slice().reverse().map(t => {
             const list = d.unlocked.filter(u => u.tier === t);
             return list.length ? <div key={t} className="tier-group"><TierPill tier={t} />

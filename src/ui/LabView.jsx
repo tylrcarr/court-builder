@@ -29,7 +29,7 @@ export default function LabView({ lab, setLab, onOpen, onCompare, onSave }) {
 
   function start() {
     run({ positions: lab.positions, heights: lab.heights, thorough: lab.thorough, goals: lab.goals,
-      badgeGoals: chosen, weights: starsToWeights(lab.stars), breakers: lab.breakers, limit: lab.limit });
+      badgeGoals: chosen, weights: starsToWeights(lab.stars), breakers: lab.breakers, limit: lab.limit, polish: lab.polish });
   }
   function applyPreset(p) {
     const stars = attributes.map(a => p.stars[a.name] ?? 1);
@@ -50,6 +50,8 @@ export default function LabView({ lab, setLab, onOpen, onCompare, onSave }) {
           <HeightRange value={lab.heights} onChange={heights => set({ heights })} />
           <label className="check"><input type="checkbox" checked={lab.thorough} onChange={e => set({ thorough: e.target.checked })} />
             Thorough (more weight & wingspan options per height)</label>
+          <label className="check"><input type="checkbox" checked={!!lab.polish} onChange={e => set({ polish: e.target.checked })} />
+            Badge polish (trade a few priority points for extra badge tiers)</label>
           <h3>Cap Breakers</h3>
           <BreakerSettings value={lab.breakers} onChange={breakers => set({ breakers })} />
         </div>
