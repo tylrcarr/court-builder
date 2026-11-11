@@ -112,7 +112,10 @@ export async function setHeight(target, log = () => {}) {
       const fits = seen.length === label.length && [...seen].every((c, k) => c === label[k] || (c === '?' && label[k] === '8'));
       if (fits && seen.includes('?')) { log(`learning 8 from ${label}: ${glyphLearn(screen.file, PICKER.height, label)}`); now = known; }
     }
-    if (now == null) { log(`height unreadable (${screen.body.height})`); return false; }
+    if (now == null) {
+      if (known == null && attempt < 4) { log(`height unreadable (${screen.body.height}); stepping to a readable neighbour`); await stepPicker('height', attempt % 2 ? 1 : -1); continue; }
+      log(`height unreadable (${screen.body.height})`); return false;
+    }
     if (now === target) return true;
     const dir = Math.sign(target - now);
     await stepPicker('height', dir);
