@@ -1,0 +1,75 @@
+[
+  {
+    "source": "User report in chat, 2026-11-06",
+    "status": "Exact final rating spread uses reported name; general post-breaker rule unresolved",
+    "body": {
+      "position": "C",
+      "height": 83,
+      "weight": 236,
+      "wingspan": 89
+    },
+    "base": [
+      74,
+      71,
+      89,
+      70,
+      55,
+      68,
+      78,
+      83,
+      89,
+      70,
+      64,
+      80,
+      72,
+      42,
+      84,
+      89,
+      94,
+      75,
+      66,
+      84,
+      80
+    ],
+    "final": [
+      74,
+      71,
+      93,
+      70,
+      55,
+      68,
+      78,
+      83,
+      89,
+      70,
+      64,
+      80,
+      72,
+      63,
+      84,
+      90,
+      95,
+      75,
+      66,
+      84,
+      80
+    ],
+    "reportedName": "2-Way Rim-Rocking Dimer",
+    "predictedName": "Showtime Edge Enforcer"
+  },
+  {
+    "source": "User report in chat, 2026-11-06",
+    "status": "Corrected to seven-point gap at height 81 after CVPalace verification",
+    "body": {
+      "position": "PF",
+      "height": 81,
+      "weight": 244,
+      "wingspan": 85
+    },
+    "reported": {
+      "postControl": 84,
+      "closeShot": 77
+    },
+    "importedMinimumDelta": 5
+  }
+]
