@@ -1,6 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import { attributes, capsFor, feet, positions } from '../engine.js';
-import { archetypeTable, nextPickHints, pickCandidates, previewBody } from '../hunt.js';
+import { archetypeTable, isGreat, nextPickHints, perBreaker, pickCandidates, previewBody } from '../hunt.js';
 import { BreakerPlan, PlanCard, optimizerOptions, usePool } from './LabView.jsx';
 import { HeightRange, NumberInput, PositionToggles, Select, label } from './common.jsx';
 
@@ -18,6 +18,7 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
   const [breakers, setBreakers] = useState({ general: 15, future: 0, special: { category: 'shooting' } });
   const [state, setState] = useState({ running: false });
   const [sortBy, setSortBy] = useState('gain');
+  const [minStep, setMinStep] = useState(2);
   const pool = usePool();
 
   const rows = positions[preview.position];
@@ -25,7 +26,8 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
   const body = previewBody(preview.position, height);
   const caps = useMemo(() => capsFor(body), [body.position, body.height]);
   const table = useMemo(() => picks.length ? archetypeTable(picks, body, want) : [], [picks, want, body.position, body.height]);
-  const hints = useMemo(() => picks.length < MAX_PICKS ? nextPickHints(picks, body, want) : [], [picks, want, body.position, body.height]);
+  const great = table.filter(r => isGreat(r, minStep));
+  const hints = useMemo(() => picks.length < MAX_PICKS ? nextPickHints(picks, body, want, minStep) : [], [picks, want, minStep, body.position, body.height]);
   const bestHint = Math.max(0, ...hints.filter(x => x != null));
 
   const toggle = i => setPicks(p => p.includes(i) ? p.filter(x => x !== i) : p.length < MAX_PICKS ? [...p, i] : p);
@@ -37,7 +39,7 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
     const heights = Array.from({ length: where.heights[1] - where.heights[0] + 1 }, (_, k) => where.heights[0] + k);
     setState({ running: true, progress: { label: 'Finding archetypes that lock in', done: 0, total: heights.length } });
     const screened = await pool.runJobs(heights.map(h => ({ kind: 'huntScreen',
-      options: { positions: posList, heights: [h, h], picks, want, breakers } })),
+      options: { positions: posList, heights: [h, h], picks, want, breakers, minStep } })),
     (done, total) => live() && setState(s => ({ ...s, progress: { ...s.progress, done, total } })));
     if (!live()) return;
     const found = screened.flatMap(r => r?.found ?? []);
@@ -70,12 +72,18 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
         <div className="config-block grow-2">
           <h3>1. Attributes <span className="muted small">{picks.length}/{MAX_PICKS} picked{picks.length < MAX_PICKS && picks.length > 0
             ? ' · numbers = breaker points with it added' : ''}</span></h3>
+          <div className="sort-bar"><span className="muted small">Great breakers = at least</span>
+            <div className="toggles" role="group" aria-label="Smallest average step">{[[0, 'Any'], [2, '+2'], [3, '+3'], [4, '+4']].map(([v, t]) =>
+              <button key={v} className={minStep === v ? 'on' : ''} aria-pressed={minStep === v} onClick={() => setMinStep(v)}>{t}</button>)}</div>
+            <span className="muted small">per breaker on every pick. Greyed attributes have no archetype that does that with your picks so far.</span></div>
           <div className="hunt-attrs">{attributes.map((a, i) => {
             const on = picks.includes(i), h = hints[i];
-            return <button key={a.name} className={on ? 'on' : h != null && h === bestHint ? 'hint-best' : ''} aria-pressed={on}
+            const dead = !on && h === 0;
+            return <button key={a.name} className={on ? 'on' : dead ? 'dead' : h != null && h === bestHint ? 'hint-best' : ''} aria-pressed={on}
               disabled={!on && picks.length >= MAX_PICKS} onClick={() => toggle(i)}
-              title={on ? 'Remove' : h != null ? `Best archetype would get ${h} breaker points across your picks` : ''}>
-              {on && <b>{picks.indexOf(i) + 1}</b>} {short(i)}{!on && h != null && <small> +{h}</small>}</button>;
+              title={on ? 'Remove' : dead ? `No archetype gives ${picks.length ? 'this and your picks' : 'this'} +${minStep} per breaker on the preview body`
+                : h != null ? `Best archetype would get ${h} breaker points across your picks` : ''}>
+              {on && <b>{picks.indexOf(i) + 1}</b>} {short(i)}{!on && h > 0 && <small> +{h}</small>}</button>;
           })}</div>
           {picks.length > 0 && <div className="hunt-targets">{picks.map(i =>
             <label key={i} className="field compact"><span>{short(i)} target</span>
@@ -100,12 +108,16 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
         <h3>2. Archetypes for a {preview.position} {feet(height)} <span className="muted small">ranked by breaker points on your picks</span></h3>
         <div className="table-wrap"><table className="hunt-table">
           <thead><tr><th>Archetype</th><th>Points</th>{picks.map(i => <th key={i}>{short(i)}</th>)}<th>Built around (keep these high)</th></tr></thead>
-          <tbody>{table.slice(0, SHOWN).map((r, k) => <tr key={r.type} className={k === 0 ? 'best' : ''}>
+          <tbody>{great.slice(0, SHOWN).map((r, k) => <tr key={r.type} className={k === 0 ? 'best' : ''}>
             <td>#{r.type}</td><td><b>+{r.total}</b></td>
             {r.per.map(p => <td key={p.i} title={`Weight in this archetype ${p.weight.toFixed(2)} (lower = bigger steps, cheaper base)`}>
-              {p.base} → {p.target} <span className="muted small">({p.steps.join('+') || '—'})</span></td>)}
+              {p.base} → {p.target} <span className="muted small">({p.steps.join('+') || '—'}, +{perBreaker(p).toFixed(1)} avg)</span></td>)}
             <td className="muted small">{r.heavy.map(short).join(' · ')}</td></tr>)}</tbody>
         </table></div>
+        {!great.length && <p className="warn small">No archetype gives every pick +{minStep} per breaker on this body. Drop a pick, lower
+          a target, lower the step or try another preview height.</p>}
+        {great.length > 0 && table.length > great.length && <p className="muted small">{table.length - great.length} archetypes
+          hidden: they give at least one pick less than +{minStep} per breaker.</p>}
         <p className="muted small">Base → target with up to 5 breakers. Rankings here only say the gains are big; whether the build
           can actually be that archetype (its heavy attributes must outscore the others under 99) is checked by Find builds.</p>
       </>}

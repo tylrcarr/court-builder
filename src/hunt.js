@@ -44,9 +44,16 @@ export function archetypeTable(picks, body, targets = {}) {
   return rows.sort((a, b) => b.total - a.total || a.type - b.type);
 }
 
-// For each attribute not picked yet: the best total the picks would get with it added (under the best archetype).
-export function nextPickHints(picks, body, targets = {}) {
-  return attributes.map((_, i) => picks.includes(i) ? null : archetypeTable([...picks, i], body, targets)[0].total);
+// Average a breaker adds to each pick under an archetype; "great" = every pick averages at least `minStep` (so an
+// archetype that gives one of them +1s is out).
+export const perBreaker = p => p.steps.length ? p.gain / p.steps.length : 0;
+export const isGreat = (row, minStep = 0) => row.per.every(p => p.gain > 0 && perBreaker(p) >= minStep);
+export const greatRows = (picks, body, targets = {}, minStep = 0) => archetypeTable(picks, body, targets).filter(r => isGreat(r, minStep));
+
+// For each attribute not picked yet: the best total the picks would get with it added, counting only archetypes that
+// are great for all of them (null = picked already; 0 = no archetype is great for that combination).
+export function nextPickHints(picks, body, targets = {}, minStep = 0) {
+  return attributes.map((_, i) => picks.includes(i) ? null : greatRows([...picks, i], body, targets, minStep)[0]?.total ?? 0);
 }
 
 const poolFor = breakers => {
@@ -80,12 +87,12 @@ function lockIn(body, picks, want, type, pool) {
 }
 
 // Screen bodies × their best-fitting archetypes for ones that can actually be locked in under 99 Overall.
-export function huntScreen(positionList, heights, picks, want, breakers, { perBody = 4, onProgress } = {}) {
+export function huntScreen(positionList, heights, picks, want, breakers, { perBody = 4, minStep = 0, onProgress } = {}) {
   const pool = poolFor(breakers);
   const bodies = bodiesFor(positionList, heights, { frames: 3 });
   const found = [];
   bodies.forEach((body, n) => {
-    for (const row of archetypeTable(picks, body, want).slice(0, perBody)) {
+    for (const row of greatRows(picks, body, want, minStep).slice(0, perBody)) {
       const hit = lockIn(body, picks, want, row.type, pool);
       if (!hit) continue;
       // How close the picks get to what you asked for (overshoot doesn't count; a frame with a lower cap does).

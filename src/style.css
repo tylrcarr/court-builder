@@ -549,3 +549,4 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .hunt-table tr.best td { background: rgba(255,90,31,0.10); }
 .hunt-result { display: flex; flex-direction: column; gap: 4px; }
 .hunt-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hunt-attrs button.dead { opacity: 0.35; }
