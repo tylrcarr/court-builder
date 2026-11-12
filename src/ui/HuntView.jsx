@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { attributes, feet, positions } from '../engine.js';
 import { capsAcross, hintsAcross, perBreaker, pickCandidates, rangeBodies, tableAcross } from '../hunt.js';
 import { BreakerPlan, PlanCard, optimizerOptions, usePool } from './LabView.jsx';
@@ -10,16 +10,52 @@ const MAX_PICKS = 3;
 const SHOWN = 10;
 const short = i => label(attributes[i].name);
 
+// Saved in localStorage: the current search (and its last results) plus named searches. Attributes are stored by name
+// so the saves survive changes to the attribute order.
+const KEY = 'court-builder.hunt.v1', SAVED_KEY = 'court-builder.hunt-searches.v1';
+const load = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
+const store = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* full or blocked */ } };
+const indexOf = n => attributes.findIndex(a => a.name === n);
+const byName = obj => Object.fromEntries(Object.entries(obj ?? {}).map(([i, v]) => [attributes[i]?.name, v]).filter(([k]) => k));
+const byIndex = obj => Object.fromEntries(Object.entries(obj ?? {}).map(([n, v]) => [indexOf(n), v]).filter(([i]) => i >= 0));
+const DEFAULTS = { picks: [], want: {}, where: { positions: ['SG'], heights: [76, 81] }, need: {},
+  breakers: { general: 15, future: 0, special: { category: 'shooting' } }, minStep: 2, sortBy: 'gain' };
+const toSaved = c => ({ ...c, picks: c.picks.map(i => attributes[i].name), want: byName(c.want), need: byName(c.need) });
+const fromSaved = c => ({ ...DEFAULTS, ...c, picks: (c?.picks ?? []).map(indexOf).filter(i => i >= 0),
+  want: byIndex(c?.want), need: byIndex(c?.need) });
+
 export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, notify }) {
-  const [picks, setPicks] = useState([]);
-  const [want, setWant] = useState({}); // attribute index → target final rating (absent = body's cap)
-  const [where, setWhere] = useState({ positions: ['SG'], heights: [76, 81] });
-  const [need, setNeed] = useState({}); // attribute index → minimum final rating the builds must also have
+  const [initial] = useState(() => { const c = load(KEY, null); return { cfg: fromSaved(c ?? {}), result: c?.result ?? null, ms: c?.ms }; });
+  const [picks, setPicks] = useState(initial.cfg.picks);
+  const [want, setWant] = useState(initial.cfg.want); // attribute index → target final rating (absent = body's cap)
+  const [where, setWhere] = useState(initial.cfg.where);
+  const [need, setNeed] = useState(initial.cfg.need); // attribute index → minimum final rating the builds must also have
   const [needPick, setNeedPick] = useState(attributes.findIndex(a => a.name === 'defensive_rebound'));
-  const [breakers, setBreakers] = useState({ general: 15, future: 0, special: { category: 'shooting' } });
-  const [state, setState] = useState({ running: false });
-  const [sortBy, setSortBy] = useState('gain');
-  const [minStep, setMinStep] = useState(2);
+  const [breakers, setBreakers] = useState(initial.cfg.breakers);
+  const [state, setState] = useState({ running: false, result: initial.result, ms: initial.ms });
+  const [sortBy, setSortBy] = useState(initial.cfg.sortBy);
+  const [minStep, setMinStep] = useState(initial.cfg.minStep);
+  const [saved, setSaved] = useState(() => load(SAVED_KEY, []));
+  const [saveName, setSaveName] = useState('');
+  const cfg = { picks, want, where, need, breakers, minStep, sortBy };
+  // Results are kept with the search they came from (resultPicks), so changing the picks afterwards doesn't relabel them.
+  useEffect(() => { if (!state.running) store(KEY, { ...toSaved(cfg), result: state.result ?? null, ms: state.ms }); },
+    [picks, want, where, need, breakers, minStep, sortBy, state.running, state.result]);
+  useEffect(() => store(SAVED_KEY, saved), [saved]);
+  // Another open tab saved or deleted a hunt: pick it up instead of overwriting it with this tab's list.
+  useEffect(() => {
+    const onStorage = e => { if (e.key === SAVED_KEY) setSaved(load(SAVED_KEY, [])); };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, []);
+  const apply = c => { const f = fromSaved(c); setPicks(f.picks); setWant(f.want); setWhere(f.where); setNeed(f.need);
+    setBreakers(f.breakers); setMinStep(f.minStep); setSortBy(f.sortBy); setState({ running: false, result: c.result ?? null, ms: c.ms }); };
+  const saveSearch = () => {
+    const title = saveName.trim() || picks.map(short).join(' + ') || 'Breaker hunt';
+    const entry = { id: crypto.randomUUID(), title, ...toSaved(cfg), result: state.result ?? null, ms: state.ms };
+    setSaved(list => [entry, ...list.filter(x => x.title.toLowerCase() !== title.toLowerCase())].slice(0, 30));
+    setSaveName(''); notify(`Saved hunt “${title}”${state.result ? ' with its results' : ''}.`);
+  };
   const pool = usePool();
 
   const posList = where.positions.length ? where.positions : Object.keys(positions);
@@ -43,7 +79,7 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
     const found = screened.flatMap(r => r?.found ?? []);
     const bodies = screened.reduce((s, r) => s + (r?.screened ?? 0), 0);
     const chosen = pickCandidates(found);
-    if (!chosen.length) { setState({ running: false, result: { bodies, found: 0, results: [] } }); return; }
+    if (!chosen.length) { setState({ running: false, result: { bodies, found: 0, results: [], picks: picks.map(i => attributes[i].name) } }); return; }
     const opts = { ...optimizerOptions(prefs, { ...labCfg, mustHave: {}, from: null, breakers }),
       minimums: attributes.map(() => 25), maximums: attributes.map(() => 99) };
     setState(s => ({ ...s, progress: { label: 'Building', done: 0, total: chosen.length } }));
@@ -51,11 +87,12 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
       (done, total) => live() && setState(s => ({ ...s, progress: { ...s.progress, done, total } })));
     if (!live()) return;
     const results = built.map((r, k) => r && !r.error ? { ...r, candidate: chosen[k] } : null).filter(Boolean);
-    setState({ running: false, ms: performance.now() - started, result: { bodies, found: found.length, results } });
+    setState({ running: false, ms: performance.now() - started, result: { bodies, found: found.length, results, picks: picks.map(i => attributes[i].name) } });
     if (!results.length) notify('Archetypes lock in, but the full builds failed. Try fewer or lower targets.');
   }
 
-  const gainOf = r => picks.reduce((s, i) => s + r.final[i] - r.base[i], 0);
+  const shownPicks = state.result?.picks ? state.result.picks.map(indexOf).filter(i => i >= 0) : picks;
+  const gainOf = r => shownPicks.reduce((s, i) => s + r.final[i] - r.base[i], 0);
   const results = [...(state.result?.results ?? [])].sort((a, b) => sortBy === 'gain'
     ? gainOf(b) - gainOf(a) || (b.meta ?? 0) - (a.meta ?? 0) : (b.meta ?? 0) - (a.meta ?? 0));
 
@@ -64,7 +101,15 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
       <div className="card-head"><div><h2>Breaker Hunt <span className="chip">test</span></h2>
         <p className="muted">Pick the attributes you want Cap Breakers to carry. Each breaker adds more when your archetype weighs
           that attribute lightly (and a lightly weighted rating is cheap in Overall), so the right archetype turns 5 breakers
-          from +5 into +15 or more. Pick one at a time and watch which archetypes fit.</p></div></div>
+          from +5 into +15 or more. Pick one at a time and watch which archetypes fit.</p></div>
+        <div className="actions"><input type="text" placeholder="Search name (optional)" value={saveName} maxLength={60}
+          onChange={e => setSaveName(e.target.value)} /><button onClick={saveSearch}>Save search</button>
+          <button onClick={() => { apply(DEFAULTS); notify('Breaker Hunt reset.'); }}>Reset</button></div></div>
+      {saved.length > 0 && <div className="saved-searches"><span className="muted small">Saved:</span>
+        {saved.map(x => <span key={x.id} className="chip">
+          <button className="linkish" title={x.result ? `${x.result.results.length} builds saved with it` : 'Settings only'}
+            onClick={() => { apply(x); notify(`Loaded “${x.title}”.`); }}>{x.title}{x.result?.results?.length ? ` · ${x.result.results.length}` : ''}</button>
+          <button className="linkish" aria-label={`Delete ${x.title}`} onClick={() => setSaved(l => l.filter(y => y.id !== x.id))}>×</button></span>)}</div>}
 
       <div className="config-block">
         <h3>1. Bodies <span className="muted small">used for everything below: the archetype table, the hints and Find builds</span></h3>
@@ -157,7 +202,7 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
           <button key={id} className={sortBy === id ? 'on' : ''} aria-pressed={sortBy === id} onClick={() => setSortBy(id)}>{text}</button>)}</div></div>
       <div className="results">{results.map((r, k) => <div key={k} className="hunt-result">
         <div className="hunt-strip"><span className="chip">Archetype #{r.playerType}</span>
-          {picks.map(i => <span key={i} className="chip" title={`${r.breakers[i]} Cap Breakers`}>
+          {shownPicks.map(i => <span key={i} className="chip" title={`${r.breakers[i]} Cap Breakers`}>
             {short(i)} {r.base[i]} → <b>{r.final[i]}</b> (+{r.final[i] - r.base[i]}, {r.breakers[i]}×)</span>)}
           <span className="muted small">+{gainOf(r)} from breakers</span></div>
         <PlanCard rank={k + 1} plan={r} prefs={prefs} mode={labCfg.mode ?? 'both'} onOpen={onOpen} onCompare={onCompare} onSave={onSave} />
