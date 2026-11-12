@@ -5,11 +5,11 @@
 // handle, speed, agility…) — those are "continuous". This module finds breakpoints, measures dead
 // weight, and optimizes a body badge-first: must-have tiers, then the best badge value per Overall point,
 // then continuous attributes with whatever is left.
-import { alternatives, attributes, badges, badgeTier, capsFor, defaultBody, empty, inHeight, mergeFloors, overall,
+import { alternatives, attributes, badges, badgeTier, capsFor, defaultBody, empty, inHeight, ladder, mergeFloors, overall,
   playerTypeCount, positions, tiers, typeWeights } from './engine.js';
 import { clampLinks, fill, finalsFor, satisfy, satisfyAs, tierRank } from './solver.js';
 import { animations, isAnimation } from './animations.js';
-import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, heightMeta, metaCap, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
+import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, heightMeta, metaCap, reboundGate, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
 
 // Everything a build can aim for: badges plus animation unlocks (same shape, one tier).
 export const goals = [...badges, ...animations];
@@ -83,19 +83,21 @@ function continuousTerms(opts, final = null) {
   const names = final ? feelFor({ continuous: opts.continuous ?? [], notFeel: opts.notFeel }, '', final) : (opts.continuous ?? []);
   const terms = names.map(k => typeof k === 'number' ? k : idx[k]).map(i => [i, (cw[attributes[i].name] ?? 1) * CONTINUOUS_RATE, 99]);
   const rate = metaRate(opts);
-  if (rate > 0) for (const [name, [w, target, floor = 0, ceiling = 99]] of Object.entries(attrMetaFor(opts.position, opts.height))) {
+  if (rate > 0) for (const [name, [w, target, floor = 0, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(opts.position, opts.height))) {
     const i = idx[name];
     if (terms.some(t => t[0] === i) || (opts.notFeel ?? []).includes(name)) continue;
-    terms.push([i, w * ATTR_META_RATE * rate * CONTINUOUS_RATE, target, floor, ceiling]);
+    terms.push([i, w * ATTR_META_RATE * rate * CONTINUOUS_RATE, target, floor, ceiling, hit]);
   }
   return terms;
 }
-const termValue = (w, target, f, floor = 0, ceiling = 99) => w * (Math.min(f, target) + 0.25 * Math.max(0, Math.min(f, ceiling) - target)
-  + 2 * Math.min(f, floor));
+// hit (optional): a one-off bonus, in rating points, for reaching the target — a cliff like a badge breakpoint (90
+// defensive rebound on a big), so the last point to it isn't worth the same as any other.
+const termValue = (w, target, f, floor = 0, ceiling = 99, hit = 0) => w * (Math.min(f, target) + 0.25 * Math.max(0, Math.min(f, ceiling) - target)
+  + 2 * Math.min(f, floor) + (f >= target ? hit : 0));
 const metaRate = opts => opts?.meta === false ? 0 : (opts?.metaRate ?? 1);
 export function objective(final, height, opts) {
   let v = badgeValue(final, height, opts);
-  for (const [i, w, target, floor, ceiling] of continuousTerms(opts, final)) v += termValue(w, target, final[i], floor, ceiling);
+  for (const [i, w, target, floor, ceiling, hit] of continuousTerms(opts, final)) v += termValue(w, target, final[i], floor, ceiling, hit);
   return v;
 }
 
@@ -131,17 +133,58 @@ function metaParts(final, height, position, mode) {
     if (m > 0 && inHeight(b, height)) total += m * dunkFactor(b, height) * metaTierWorth(b, Math.min(tierRank(badgeTier(b, final, height)), metaCap(b)))
       * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
   }
-  for (const [name, [w, target, floor = 60, ceiling = 99]] of Object.entries(attrMetaFor(position, height)))
+  for (const [name, [w, target, floor = 60, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(position, height)))
     total += termValue(w * ATTR_META_RATE * CONTINUOUS_RATE / META_RATE, target - 60, Math.max(0, final[idx[name]] - 60),
-      Math.max(0, floor - 60), ceiling - 60);
+      Math.max(0, floor - 60), ceiling - 60, hit);
   return total;
 }
+// Almost there counts a little: a meta badge tier 1 Cap Breaker away adds half its worth, 2 away a quarter, scaled by
+// the share of the 28 breakers you still have to get (a build already using 20 has fewer left for it). E.g. 82 strength
+// on a big one breaker from Brick Wall silver (83). near: { applied, ladders, used } — from derive (applied, ladders,
+// breakerCount) or nearOf(plan). Breakers beyond 5 per attribute or past the cap don't count.
+export const NEAR_CREDIT = [0, 0.5, 0.25];
+function nearParts(final, near, height, position, mode) {
+  const avail = Math.max(0, MAX_CAP_BREAKERS - (near.used ?? 0)) / MAX_CAP_BREAKERS;
+  if (avail <= 0) return 0;
+  // Breakers needed to lift attribute i to m (Infinity if its ladder can't get there).
+  const need = (i, m) => {
+    let v = final[i], k = 0;
+    for (let step = near.applied[i]; v < m; step++) {
+      const g = near.ladders[i][step];
+      if (step >= 5 || !g) return Infinity;
+      v += g; k++;
+    }
+    return k;
+  };
+  let total = 0;
+  for (const b of goals) {
+    const m = metaOf(b, position, mode);
+    if (m <= 0 || !inHeight(b, height)) continue;
+    const rank = Math.min(tierRank(badgeTier(b, final, height)), metaCap(b));
+    if (rank >= metaCap(b) || rank >= b.tiers.length) continue;
+    const next = b.tiers[rank];
+    let k = Infinity;
+    for (const floor of alternatives(next)) k = Math.min(k, floor.reduce((s, f, i) => s + (f > final[i] ? need(i, f) : 0), 0));
+    if (k < 1 || k >= NEAR_CREDIT.length) continue;
+    total += NEAR_CREDIT[k] * avail * m * dunkFactor(b, height) * (metaTierWorth(b, rank + 1) - metaTierWorth(b, rank))
+      * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
+  }
+  return total;
+}
+export function nearOf(r) {
+  const caps = capsFor(r.body), h = r.body.height, type = r.playerType ?? overall(r.base, h).playerType;
+  return { applied: r.breakers, used: r.breakers.reduce((s, n) => s + n, 0),
+    ladders: r.base.map((v, i) => ladder(i, v, caps[i], h, type)) };
+}
+export const nearOfDerived = d => ({ applied: d.applied, ladders: d.ladders, used: d.breakerCount });
 const metaMax = new Map();
-export function metaScore(final, height, position, mode = '5v5') {
+export function metaScore(final, height, position, mode = '5v5', near = null) {
   const key = [height, position, mode].join();
   if (!metaMax.has(key)) metaMax.set(key, metaParts(attributes.map(() => 99), height, position, mode));
-  const share = 100 * metaParts(final, height, position, mode) / Math.max(1e-9, metaMax.get(key));
-  return share * heightMeta(height, position) * shootingGate(final[idx.three_point]);
+  const share = 100 * (metaParts(final, height, position, mode) + (near ? nearParts(final, near, height, position, mode) : 0))
+    / Math.max(1e-9, metaMax.get(key));
+  return share * heightMeta(height, position) * shootingGate(final[idx.three_point])
+    * reboundGate(final[idx.defensive_rebound], position, height, final[idx.speed_with_ball]);
 }
 
 // Goal name → tier rank (up to its worth-paying cap) for every valued badge/animation these ratings hold.
@@ -156,6 +199,33 @@ export function heldTiers(final, height, prefs) {
 }
 
 export const byName = Object.fromEntries(goals.map(b => [b.name, b]));
+
+// Attributes some real meta badge uses at this position (worth ≥ 1.5 at its best counted tier). Post Control only
+// feeds post badges (Post Fade silver+ is low-normal at best), so on most builds it isn't one.
+export function metaAttributes(position, height) {
+  const out = new Set();
+  for (const g of goals) if (inHeight(g, height) && metaOf(g, position) * metaTierWorth(g, metaCap(g)) >= 1.5)
+    for (const t of g.tiers) for (const q of t.requirements) out.add(q.attribute ?? idx[q.name]);
+  return out;
+}
+
+// Ratings that are only there to hold the archetype (the "archetype tax"): 6 points lower and the build turns into
+// another archetype (so every Cap Breaker ladder changes), yet no badge the meta cares about (worth ≥ 1 at this
+// position) loses a tier. d: a derived build (see derive). E.g. 71 Post Control on a 7'0" C keeping it archetype #1.
+export function archetypeHolders(d, drop = 6) {
+  const type = d.state.playerType, out = [];
+  for (let i = 0; i < d.ratings.length; i++) {
+    // Smallest drop (1…drop) that flips the archetype; free = how many points you could still take off safely.
+    let k = 0, to = type;
+    for (let x = 1; x <= drop && d.ratings[i] - x >= 25; x++) { to = overall(d.ratings.map((v, j) => j === i ? v - x : v), d.height).playerType; if (to !== type) { k = x; break; } }
+    if (!k) continue;
+    const finals = d.final.map((v, j) => j === i ? v - k : v);
+    const costs = goals.some(g => metaOf(g, d.position) * metaTierWorth(g, metaCap(g)) >= 1.5 && inHeight(g, d.height)
+      && tierRank(badgeTier(g, finals, d.height)) < tierRank(badgeTier(g, d.final, d.height)));
+    if (!costs) out.push({ i, rating: d.ratings[i], to, free: k - 1 });
+  }
+  return out;
+}
 function meets(final, height, required) {
   for (const [name, rank] of required) if (tierRank(badgeTier(byName[name], final, height)) < rank) return false;
   return true;
@@ -272,6 +342,7 @@ export function optimizeBody(body, opts) {
     const r = optimizeOnce(body, { ...opts, mustHave: { ...opts.mustHave, [seed.name]: seed.tier } });
     if (!r.error && r.value > first.value + 1e-9) first = { ...r, seed };
   }
+  first = dropPass(first, body, opts);
   if (!opts.refine) return first;
   // Second pass: lock in what the first pass reached and look for a cheaper arrangement of it.
   const mustHave = { ...opts.mustHave };
@@ -281,10 +352,37 @@ export function optimizeBody(body, opts) {
   return !second.error && second.value > first.value + 1e-9 ? second : first;
 }
 
+// Take-back pass: the greedy fill buys Overall in chunks and never sells it back, so a cheap attribute that unlocks lots
+// of small badges (Post Control → six post badges) can soak up Overall that a meta attribute would use better. Cap the
+// highest ratings that aren't meta for this position (not your feel picks, minimums or leftover list) one at a time,
+// re-plan, and keep a version only if picks + meta improve. E.g. a 6'11" C: Post Control 86 → 60, meta 66.8 → 67.7.
+const DROP_TRIES = 3, DROP_TO = 60;
+function dropPass(first, body, opts) {
+  const group = metaGroup(body.position), keep = new Set([...LEFTOVER[group], ...Object.keys(attrMetaFor(body.position, body.height)),
+    ...(opts.continuous ?? []).map(k => typeof k === 'number' ? attributes[k].name : k)]);
+  // Attributes a real meta badge uses aren't dropped: vertical feeds dunks and boards, layup the finishing badges.
+  const metaUse = metaAttributes(body.position, body.height);
+  // Never below what the specialization needs (its unlock floors).
+  const category = opts.breakers?.special?.category ?? '', spec = category ? specMinimums(category) : empty();
+  const tries = attributes.map((a, i) => i).filter(i => !keep.has(attributes[i].name) && !metaUse.has(i) && first.final[i] > DROP_TO + 5
+    && (opts.minimums?.[i] ?? 25) <= DROP_TO && spec[i] <= 25).sort((i, j) => first.final[j] - first.final[i]).slice(0, DROP_TRIES);
+  let best = first, bestScore = archetypeScore(first, body, opts);
+  for (const i of tries) {
+    const maximums = attributes.map((_, j) => j === i ? Math.min(opts.maximums?.[j] ?? 99, DROP_TO) : opts.maximums?.[j] ?? 99);
+    const r = optimizeOnce(body, { ...opts, maximums, mustHave: best.seed ? { ...opts.mustHave, [best.seed.name]: best.seed.tier } : opts.mustHave });
+    if (r.error) continue;
+    const sc = archetypeScore(r, body, opts);
+    if (sc > bestScore + 0.25) { best = { ...r, seed: best.seed }; bestScore = sc; }
+  }
+  return best;
+}
+
+// Last scraps of Overall: ratings that pay off point by point for the role. Breakpoint attributes (strength, boards,
+// block, dunk) stay off this list: a spare point there only makes an in-between rating (89 strength, 92 board).
 const LEFTOVER = {
-  guard: ['speed', 'agility', 'three_point', 'perimeter_defense', 'ball_handle', 'speed_with_ball', 'driving_dunk', 'steal'],
-  wing: ['speed', 'agility', 'three_point', 'perimeter_defense', 'driving_dunk', 'steal', 'vertical', 'ball_handle'],
-  big: ['speed', 'agility', 'defensive_rebound', 'block', 'three_point', 'driving_dunk', 'strength'],
+  guard: ['speed', 'agility', 'steal', 'three_point', 'perimeter_defense', 'ball_handle', 'speed_with_ball', 'free_throw'],
+  wing: ['speed', 'agility', 'three_point', 'perimeter_defense', 'steal', 'ball_handle', 'free_throw'],
+  big: ['speed', 'agility', 'free_throw', 'three_point'],
 };
 function optimizeOnce(body, opts) {
   opts = { ...opts, position: body.position, height: body.height }; // meta is position- and height-aware
@@ -293,6 +391,8 @@ function optimizeOnce(body, opts) {
   ctx.solve = opts.forceType != null ? (t, c, p) => satisfyAs(t, c, { ...p, preset: opts.presetBreakers }, opts.forceType) : satisfy;
   // Per-attribute maximums (final rating): nothing worth paying for above them, e.g. driving layup 85 next to a 99 dunk.
   const maxes = attributes.map((_, i) => Math.min(ctx.caps[i], opts.maximums?.[i] ?? 99));
+  ctx.maxes = maxes;
+  ctx.baseMin = (opts.breakers?.special?.category ?? '') ? specMinimums(opts.breakers.special.category) : null;
   const ok = t => t.every((v, i) => v <= maxes[i]);
   const { minimums = empty(), mustHave = {}, exclude = {} } = opts;
   const category = opts.breakers?.special?.category ?? '';
@@ -391,7 +491,10 @@ function optimizeOnce(body, opts) {
       // Last scraps go to ratings that matter on the floor for this role, not to whatever is cheapest (no 99 pass or
       // 86 offensive rebound as filler). Anything left after that stays unspent.
       const useful = LEFTOVER[metaGroup(opts.position)] ?? LEFTOVER.wing;
-      const loose = fill(filled, attributes.map(a => useful.includes(a.name) ? 1 : 0), ctx, [], null, maxes.map(m => Math.min(m, ceiling)));
+      // …and never past a meta ceiling (free throw stops at 75: more is wasted Overall).
+      const metaCeil = attrMetaFor(opts.position, opts.height);
+      const loose = fill(filled, attributes.map(a => useful.includes(a.name) ? 1 : 0), ctx, [], null,
+        maxes.map((m, i) => Math.min(m, ceiling, metaCeil[attributes[i].name]?.[3] ?? 99)));
       if (val(loose.final) >= val(filled.final) - 1e-9 && loose.final.every((v, i) => v >= targets[i])) filled = loose;
     }
     return { filled, feelNow };
@@ -735,6 +838,60 @@ export function archetypeCandidates(r, n = 3) {
   return list.filter(x => x.gain > 0).sort((a, b) => b.gain - a.gain).slice(0, n).map(x => x.type);
 }
 
+// Choosing between a body's natural archetype and forced ones: your picks score plus ARCH_META per meta point. Picks
+// alone can't see the meta score's gates (e.g. under-78 three), so two archetypes within a point on picks can be 20
+// meta apart (a 6'6" SG with 99 dunk / 90 vertical / 80 steal: #11 meta 37 vs #7 meta 57). Only switch for a real
+// gain (half a point ≈ half a Normal badge tier).
+export const ARCH_META = 0.25;
+export const archetypeScore = (r, body, opts) => r.value + (metaRate(opts) > 0 ? ARCH_META * metaScore(r.final, body.height, body.position, opts.mode, nearOf(r)) : 0);
+export function pickArchetype(first, alts, body, opts) {
+  return [first, ...alts].reduce((a, b) => archetypeScore(b, body, opts) > archetypeScore(a, body, opts) + 0.5 ? b : a);
+}
+
+// Frames right next to a result where a cap opens a breakpoint the build just misses: what people do by hand, pushing
+// the weight (or wingspan) until they *just* get the attribute they want and keep everything else. E.g. a 6'11" C one
+// pound heavier for a 95 defensive rebound cap (Possession Closer gold). Only breakpoints worth something to the meta
+// (badge tiers worth ≥ 1 at this position, attribute meta targets and floors). Nearest bodies first, one per opening.
+export function nudgeBodies(r, n = 3) {
+  const row = positions[r.body.position]?.find(x => x.height === r.body.height);
+  if (!row) return [];
+  const h = r.body.height, pos = r.body.position, caps0 = capsFor(r.body);
+  // attribute → { breakpoint: meta worth of reaching it } (badge tier worth, or an attribute meta target/floor).
+  const marks = new Map();
+  const add = (i, m, worth) => { if (!marks.has(i)) marks.set(i, new Map()); marks.get(i).set(m, Math.max(marks.get(i).get(m) ?? 0, worth)); };
+  for (const g of goals) if (inHeight(g, h) && metaOf(g, pos) >= 1)
+    g.tiers.forEach((t, k) => { if (k < metaCap(g)) for (const q of t.requirements)
+      add(q.attribute ?? idx[q.name], q.minimum, metaOf(g, pos) * (metaTierWorth(g, k + 1) - metaTierWorth(g, k))); });
+  for (const [name, [w, target, floor]] of Object.entries(attrMetaFor(pos, h))) { add(idx[name], target, 2 * w); if (floor) add(idx[name], floor, 4 * w); }
+  // The nearest frame (weight first, then an inch of wingspan) that opens each breakpoint, up to 30 lb either way.
+  const moves = [];
+  for (let dw = 1; dw <= 30; dw++) for (const sw of [1, -1]) for (const da of [0, 1, -1]) moves.push([sw * dw, da]);
+  for (const da of [1, -1]) moves.unshift([0, da]);
+  moves.sort((a, b) => Math.abs(a[0]) + 4 * Math.abs(a[1]) - (Math.abs(b[0]) + 4 * Math.abs(b[1])));
+  const nearest = new Map(); // "i:m" → { body, opens: [...] }
+  for (const [dw, da] of moves) {
+    const body = { ...r.body, weight: r.body.weight + dw, wingspan: r.body.wingspan + da };
+    if (body.weight < row.minWeight || body.weight > row.maxWeight || body.wingspan < row.minWingspan || body.wingspan > row.maxWingspan) continue;
+    const caps = capsFor(body);
+    for (const [i, ms] of marks) for (const [m, worth] of ms) {
+      const key = i + ':' + m;
+      if (nearest.has(key) || !(r.final[i] < m && caps0[i] < m && caps[i] >= m)) continue;
+      nearest.set(key, { body, open: { i, m, worth } });
+    }
+  }
+  // One candidate per body (everything it opens), most meta worth first, nearest on ties.
+  const byBody = new Map();
+  for (const { body, open } of nearest.values()) {
+    const k = body.weight + '/' + body.wingspan;
+    if (!byBody.has(k)) byBody.set(k, { body, opens: [] });
+    byBody.get(k).opens.push(open);
+  }
+  const dist = b => Math.abs(b.weight - r.body.weight) + 4 * Math.abs(b.wingspan - r.body.wingspan);
+  return [...byBody.values()].map(c => ({ ...c, worth: c.opens.reduce((s, o) => s + o.worth, 0) }))
+    .sort((a, b) => b.worth - a.worth || dist(a.body) - dist(b.body)).slice(0, n)
+    .map(({ body, opens }) => ({ body, opens: opens.map(({ i, m }) => ({ i, m })) }));
+}
+
 // One body, searched properly: the natural archetype plus the most promising forced ones, each a full badge-first
 // optimization. Returns the best, with the others as alternatives.
 export function optimizeBodyFull(body, opts, { pinned = false } = {}) {
@@ -747,8 +904,7 @@ export function optimizeBodyFull(body, opts, { pinned = false } = {}) {
     const alt = optimizeBody(body, { ...opts, mustHave: seeded, forceType: type });
     if (!alt.error) alts.push({ ...alt, forcedType: type });
   }
-  // Only switch archetypes for a real gain (half a score point ≈ half a Normal badge tier).
-  const best = [first, ...alts].reduce((a, b) => b.value > a.value + 0.5 ? b : a);
+  const best = pickArchetype(first, alts, body, opts);
   return best === first ? first : { ...best, archetypeTrick: true, naturalValue: first.value };
 }
 

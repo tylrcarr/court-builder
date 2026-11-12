@@ -303,6 +303,7 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .plan-badges summary { cursor: pointer; color: var(--muted); font-size: .85rem; }
 .plan-badges .chips { margin-top: 6px; }
 .chip.later { opacity: .7; border-style: dashed; }
+.chip.trick { margin-left: 8px; font-size: .75rem; border-color: var(--accent, #7aa2ff); color: var(--accent, #7aa2ff); }
 .schedule { margin: 6px 0 0; padding-left: 1.4rem; font-size: .84rem; display: flex; flex-direction: column; gap: 2px; }
 .schedule li.later { color: var(--muted); }
 .schedule li.divider { list-style: none; margin: 4px 0 2px -1.4rem; font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--warn); }
@@ -552,3 +553,37 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .hunt-attrs button.dead { opacity: 0.35; }
 .hunt .config-block + .config-block { margin-top: 12px; }
 .hunt-need { display: inline-flex; gap: 4px; align-items: center; }
+
+/* Cap Breaker chart (read-only, in cards and the Builder) */
+.cb-chart .cb-grid { margin-top: 6px; }
+.breakers.static span { display: flex; justify-content: center; padding: .05rem 0; font-size: .66rem; border: 1px solid var(--line2, rgba(255,255,255,.12)); border-radius: 6px; font-variant-numeric: tabular-nums; }
+.breakers.static span.on { background: rgba(182, 242, 58, .16); border-color: rgba(182, 242, 58, .55); color: var(--lime); }
+.breakers.static span.none { opacity: .35; }
+.cb-big { color: var(--warn); }
+.head-chart { margin-top: 8px; }
+.head-chart > summary { cursor: pointer; }
+.result .cb-chart .cb-grid { grid-template-columns: minmax(0, 1fr); gap: 0; }
+.hunt-strip .chip.miss { border-color: var(--warn); color: var(--warn); }
+.cb-save { color: var(--good, #5fd38d); font-size: .7rem; margin-left: 4px; }
+.cb-next { margin: 2px 0 8px; }
+.chip.up { border-color: var(--good, #5fd38d); color: var(--good, #5fd38d); }
+.chip.down { border-color: var(--warn, #e0a050); color: var(--warn, #e0a050); }
+.cb-hold { color: var(--warn, #e0a050); margin: 4px 0; }
+button.mini.pickable { font: inherit; font-size: .74rem; color: inherit; cursor: pointer; width: 100%; text-align: inherit; }
+.mini.pickable:hover { outline: 1px solid var(--accent, #7aa2ff); border-radius: 4px; }
+.mini.picked { outline: 2px solid var(--accent, #7aa2ff); border-radius: 4px; }
+.cb-row.focus { outline: 2px solid var(--accent, #7aa2ff); border-radius: 4px; }
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .55); display: flex; align-items: flex-start; justify-content: center;
+  padding: 4vh 16px; z-index: 50; overflow-y: auto; }
+.modal { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; width: min(920px, 100%); box-shadow: 0 20px 60px rgba(0, 0, 0, .5); }
+.reopt-list { display: grid; gap: 10px; margin-top: 8px; }
+.reopt-option { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--bg2); }
+.reopt-option .chips { margin-top: 6px; }
+.reopt-option details { margin-top: 6px; }
+.reopt-meta.up b { color: var(--good, #5fd38d); }
+.reopt-meta.down b { color: var(--warn, #e0a050); }
+.reasons .reason-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 14px; margin-top: 6px; }
+.reason-row { display: flex; gap: 8px; font-size: .78rem; line-height: 1.35; }
+.reason-name { min-width: 128px; color: var(--muted); }
+.reason-name b { color: var(--text); }
+.reason-spare { color: var(--warn); }

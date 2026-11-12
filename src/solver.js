@@ -20,8 +20,9 @@ function ctxFor(body) {
 const score = (ratings, h) => overall(ratings, h);
 
 // Smallest base rating whose first k breakers reach target (null if impossible).
+// ctx.baseMin (optional): base ratings that must hold before any breaker (specialization unlocks, e.g. 60 three).
 function baseForTarget(i, target, k, ctx, playerType) {
-  for (let b = 25; b <= Math.min(target, ctx.caps[i]); b++) {
+  for (let b = Math.max(25, ctx.baseMin?.[i] ?? 25); b <= Math.min(target, ctx.caps[i]); b++) {
     const gains = ladder(i, b, ctx.caps[i], ctx.h, playerType).slice(0, k);
     if (b + gains.reduce((s, g) => s + g, 0) >= target) return b;
   }
@@ -149,7 +150,7 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
     const gap0 = s.score - overallAs(base, ctx.h, type);
     let best = null;
     for (let i = 0; i < N; i++) {
-      if (base[i] >= ctx.caps[i]) continue;
+      if (base[i] >= Math.min(ctx.caps[i], ctx.maxes?.[i] ?? 99)) continue; // your maximums hold here too
       const trialManual = manual.map((v, j) => j === i ? Math.max(v, base[j]) + 1 : v);
       const trial = clampLinks(trialManual, ctx.h, ctx.caps);
       const ts = score(trial, ctx.h);

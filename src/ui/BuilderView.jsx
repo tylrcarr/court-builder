@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
+import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, playerTypeCount, positions, resolveLinks, tiers } from '../engine.js';
 import { maximizeBadges, trimDeadWeight, unlockTier } from '../tune.js';
-import { BASE_CEILING, DEFAULT_CONTINUOUS, MAX_SPECIALIZED, SPECIALIZATIONS, byName, deadWeight, feelFor, goals, heldTiers, nextBreakpoint, objective, valueOf } from '../breakpoints.js';
-import { META_OPTION, PlanCard, TemplateCard, optimizerOptions, pickOptions, useOptimize, usePool } from './LabView.jsx';
+import { BASE_CEILING, DEFAULT_CONTINUOUS, MAX_SPECIALIZED, SPECIALIZATIONS, byName, deadWeight, feelFor, goals, heldTiers, metaScore, nearOfDerived, nextBreakpoint, objective, pickArchetype, valueOf } from '../breakpoints.js';
+import { PlanCard, optimizerOptions, useOptimize, usePool } from './LabView.jsx';
 import { BROAD_VARIANTS, FOCUS_GROUPS, VARIANTS as DIRECTIONS } from '../variants.js';
 import { capsFor } from '../engine.js';
 import { buildImage } from './buildImage.js';
 import BadgePreview from './BadgePreview.jsx';
+import { BreakerChartDetails } from './BreakerChart.jsx';
 import { AnimationPanel, TakeoverPanel } from './Unlocks.jsx';
 import { derive, groups, nearBadges, tierShort, zeros } from '../derive.js';
 import { Bar, NumberInput, Select, TierPill, disciplineColour, label, ratingTone, requirementText } from './common.jsx';
@@ -238,6 +239,7 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
         <button onClick={() => { setBuild({ base: empty(), breakers: zeros() }); notify('Build reset to 25s. Ctrl+Z to undo.'); }}>Reset</button>
       </div>
       {exportOpen && <textarea readOnly rows={8} value={exportText} onFocus={e => e.target.select()} />}
+      <BreakerChartDetails d={d} className="head-chart" />
     </section>
 
     <div className="builder-grid">
@@ -299,8 +301,7 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
           <TradeOffs build={build} d={d} prefs={buildPrefs} mustHave={labCfg?.mustHave ?? {}} setBuild={setBuild} notify={notify} />
         </>}
         {tab === 'alts' && <>
-          <Recommender build={build} prefs={prefs} labCfg={labCfg} setBuild={setBuild} onSave={onSave} notify={notify} />
-          <Alternatives build={build} d={d} prefs={buildPrefs} setBuild={setBuild} notify={notify} />
+          <SameBreakpoints build={build} d={d} prefs={prefs} labCfg={labCfg} setBuild={setBuild} onSave={onSave} notify={notify} />
         </>}
       </aside>
     </div>
@@ -371,111 +372,102 @@ function TradeOffs({ build, d, prefs, mustHave, setBuild, notify }) {
   </section>;
 }
 
-// Same build idea, nearby bodies: re-optimizes ±2 inches (several weight/wingspan frames each) with a variant goal.
-const VARIANTS = [
-  ['same', 'Same badges', 'Keep every badge tier you have; find a body that gets them cheaper and spends the rest better.'],
-  ['playmaking', 'Better playmaking', 'Keep your core badges; playmaking badges count double, handle/speed with ball count as feel.'],
-  ['physicals', 'Better physicals', 'Keep your core badges; speed, agility and vertical count extra.'],
-];
-function variantPrefs(prefs, variant) {
-  if (variant === 'playmaking') {
-    const values = { ...prefs.values };
-    for (const g of goals) if (g.discipline === 'playmaking') values[g.name] = Math.max(1, valueOf(prefs, g)) * 2;
-    return { ...prefs, values, continuous: [...new Set([...prefs.continuous, 'ball_handle', 'speed_with_ball'])],
-      continuousWeights: { ...prefs.continuousWeights, ball_handle: 2, speed_with_ball: 2 } };
-  }
-  if (variant === 'physicals') {
-    const cw = { ...prefs.continuousWeights };
-    for (const k of ['speed', 'agility', 'vertical']) cw[k] = (prefs.continuous.includes(k) ? cw[k] ?? 1 : 0) + 2;
-    return { ...prefs, continuous: [...new Set([...prefs.continuous, 'speed', 'agility', 'vertical'])], continuousWeights: cw };
-  }
-  return prefs;
-}
-// Same body, different builds: a requirements-only template (your Lab musts, minimums and specialization from base
-// ratings), the Meta build, and each direction (faster, more dunking, better shooting…) that noticeably changes it.
-function Recommender({ build, prefs, labCfg, setBuild, onSave, notify }) {
+// Re-optimize with the same breakpoints: every badge and animation tier the build holds becomes a must-have, and the
+// optimizer re-plans everything else on this body (base ratings, where the Cap Breakers go, the archetype). The best
+// version tries every archetype in parallel; the other options keep something you might not want to lose (speed and
+// agility, free throw) or push one direction with the freed Overall. Shown in a dialog to compare and pick from.
+const REOPT_DIRECTIONS = ['faster', 'defense', 'rebounding', 'shooting', 'playmaking', 'dunking'];
+function SameBreakpoints({ build, d, prefs, labCfg, setBuild, onSave, notify }) {
   const pool = usePool();
   const [state, setState] = useState({ running: false });
-  const key = JSON.stringify([build.body, build.budget, build.category, prefs, labCfg?.mustHave, labCfg?.mode]);
+  const [open, setOpen] = useState(false);
+  const key = JSON.stringify([build.body, build.base, build.breakers, build.budget, build.category, prefs, labCfg?.mode]);
   const fresh = state.key === key;
+  const mode = labCfg?.mode ?? 'both';
+  const h = build.body.height;
+  // Never fewer breakers than the build already uses (a build over its budget keeps what it has).
+  const generalNow = Math.max(build.budget, d.generalUsed);
+  const metaOfD = x => metaScore(x.final, h, build.body.position, mode, nearOfDerived(x));
   async function run() {
     pool.cancel();
-    const mine = pool.token.current;
-    const opts = optimizerOptions(prefs, { ...labCfg, from: null,
-      breakers: { general: build.budget, future: 0, special: { category: build.category } } });
-    setState({ running: true, key, progress: null });
-    const jobs = [opts, ...DIRECTIONS.map(v => ({ ...v.apply(opts), archetypes: false, seeds: 0 }))].map(o => ({ kind: 'body', options: { body: build.body, opts: o } }));
-    const out = await pool.runJobs(jobs, (done, total) => mine === pool.token.current && setState(s => ({ ...s, progress: { done, total } })));
-    if (mine !== pool.token.current) return;
-    const [meta, ...rest] = out;
-    if (!meta || meta.error) return setState({ running: false, key, error: meta?.error ?? 'The optimizer could not finish.' });
-    setState({ running: false, key, meta, options: pickOptions(meta, rest) });
-  }
-  const use = p => { setBuild({ base: p.manual, breakers: p.breakers }); notify('Applied to this body. Ctrl+Z to undo.'); };
-  const mode = labCfg?.mode ?? 'both';
-  return <section className="card recommender">
-    <div className="row-head"><h3>Options for this body</h3>
-      {state.running ? <button className="mini-btn" onClick={() => { pool.cancel(); setState(s => ({ ...s, running: false })); }}>Cancel</button>
-        : <button className="mini-btn" onClick={run}>{fresh && state.meta ? 'Run again' : 'Recommend'}</button>}</div>
-    <p className="muted small">Same height, weight and wingspan. Uses your Build Lab picks, musts and minimums; with none set, it's the
-      meta for this body.</p>
-    {state.running && <p className="status-line"><span className="spinner" />Building options…
-      {state.progress?.total ? ` ${state.progress.done}/${state.progress.total}` : ''}</p>}
-    {state.error && <p className="status-line warn">{state.error}</p>}
-    {fresh && state.meta && <div className="results recommend-grid">
-      <TemplateCard plan={state.meta} prefs={prefs} mustHave={labCfg?.mustHave} onOpen={use} openLabel="Use this" />
-      <PlanCard plan={state.meta} prefs={prefs} mode={mode} variant={META_OPTION} onOpen={use} onSave={onSave} openLabel="Use this" />
-      {state.options.map(r => <PlanCard key={r.variant.id} plan={r} variant={r.variant} compareTo={state.meta} prefs={prefs} mode={mode}
-        onOpen={use} onSave={onSave} openLabel="Use this" />)}
-    </div>}
-    {fresh && state.meta && !state.options.length && <p className="muted small">No other direction changes this body noticeably.</p>}
-    {!fresh && state.meta && <p className="muted small">The body or your Lab picks changed — Recommend again.</p>}
-  </section>;
-}
-
-function Alternatives({ build, d, prefs, setBuild, notify }) {
-  const [state, run, cancel] = useOptimize();
-  const [variant, setVariant] = useState('same');
-  const key = JSON.stringify([build.body, build.base, build.breakers, build.budget, build.category, prefs, variant]);
-  const [ranFor, setRanFor] = useState(null);
-  const h = build.body.height;
-  const nowHeld = useMemo(() => heldTiers(d.final, h, prefs), [d.final, h, prefs]);
-  const goalName = n => byName[n]?.label ?? label(n);
-  function search() {
-    const vp = variantPrefs(prefs, variant);
+    setOpen(true);
+    const mine = pool.token.current, live = () => mine === pool.token.current;
     const mustHave = {};
-    for (const [k, r] of nowHeld) if (variant === 'same' || valueOf(prefs, byName[k]) >= 3) mustHave[k] = tiers[r - 1];
-    const opts = optimizerOptions(vp, { breakers: { general: build.budget, future: 0, special: { category: build.category } }, mustHave });
-    setRanFor(key);
-    run('across', { positions: [build.body.position], heights: [Math.max(69, h - 2), Math.min(88, h + 2)], thorough: false,
-      around: build.body, opts: { ...opts, archetypes: false, seeds: 0 }, keep: 6 });
+    for (const g of goals) { const t = badgeTier(g, d.final, h); if (t) mustHave[g.name] = t; }
+    const opts = optimizerOptions(prefs, { ...labCfg, from: null, mustHave,
+      breakers: { general: generalNow, future: 0, special: { category: build.category } } });
+    const at = n => attributes.findIndex(a => a.name === n);
+    const floor = (o, names) => ({ ...o, minimums: o.minimums.map((m, i) => names.includes(attributes[i].name) ? Math.max(m, d.final[i]) : m) });
+    const options = [
+      { id: 'athletic', keep: true, label: 'Keep speed & agility', blurb: `Speed ${d.final[at('speed')]} and agility ${d.final[at('agility')]} don't drop.`,
+        o: floor(opts, ['speed', 'agility']) },
+      { id: 'ft', keep: true, label: 'Keep free throw', blurb: `Free throw stays at ${d.final[at('free_throw')]}+.`, o: floor(opts, ['free_throw']) },
+      ...DIRECTIONS.filter(v => REOPT_DIRECTIONS.includes(v.id)).map(v => ({ id: v.id, label: v.label, blurb: v.blurb, o: v.apply(opts) })),
+    ];
+    const progress = label => (done, total) => live() && setState(s => ({ ...s, progress: { label, done, total } }));
+    setState({ running: true, key, progress: { label: 'Re-planning' } });
+    // Natural archetype for the best version, plus every option (each with its 3 likeliest archetypes) in one batch.
+    const firstRound = await pool.runJobs([{ kind: 'body', options: { body: build.body, opts: { ...opts, archetypes: false } } },
+      ...options.map(x => ({ kind: 'body', options: { body: build.body, opts: x.o } }))], progress('Re-planning'));
+    if (!live()) return;
+    const [first, ...outs] = firstRound;
+    // The natural archetype may not hold every tier (builds sitting on an archetype line): try all of them anyway.
+    const ok = first && !first.error;
+    const seeded = ok && first.seed ? { ...mustHave, [first.seed.name]: first.seed.tier } : mustHave;
+    const types = Array.from({ length: playerTypeCount(h) }, (_, t) => t).filter(t => !ok || t !== first.playerType);
+    const alts = (await pool.runJobs(types.map(type => ({ kind: 'body', options: { body: build.body,
+      opts: { ...opts, mustHave: seeded, forceType: type, archetypes: false, seeds: 0 } } })), progress('Trying every archetype')))
+      .filter(r => r && !r.error);
+    if (!live()) return;
+    if (!ok && !alts.length) return setState({ running: false, key, error: first?.error ?? 'The optimizer could not finish.' });
+    const lead = ok ? first : alts.reduce((a, b) => b.value > a.value ? b : a);
+    const best = pickArchetype(lead, alts.filter(r => r !== lead), build.body, opts);
+    const derived = r => derive({ body: r.body, base: r.manual, breakers: r.breakers, budget: r.budget, category: r.category });
+    const bestD = derived(best);
+    const list = [{ id: 'best', label: 'Best overall', blurb: 'Most meta + picks with the Overall the re-plan frees.', plan: best, pd: bestD }];
+    outs.forEach((r, k) => {
+      const x = options[k];
+      // "Keep" options always show (or say why they can't); directions only when they differ from what's listed.
+      if (!r || r.error) { if (x.keep) list.push({ ...x, error: "Can't keep that and every badge tier on this body." }); return; }
+      const pd = derived(r);
+      const twin = list.find(y => y.pd && y.pd.final.reduce((s, v, i) => s + Math.abs(v - pd.final[i]), 0) < 8);
+      if (twin && !x.keep) return;
+      list.push({ ...x, plan: r, pd, sameAs: twin?.label });
+    });
+    setState({ running: false, key, list });
   }
-  const r = ranFor === key && state.result;
-  const diff = p => {
-    const then = heldTiers(p.final, p.body.height, prefs), out = [];
-    for (const [k, rank] of then) { const was = nowHeld.get(k) ?? 0; if (rank > was) out.push(`+${goalName(k)}${byName[k].tiers.length > 1 ? ' ' + tierShort(tiers[rank - 1]) : ''}`); }
-    for (const [k, was] of nowHeld) { const rank = then.get(k) ?? 0; if (rank < was) out.push(`−${goalName(k)}${rank && byName[k].tiers.length > 1 ? ' to ' + tierShort(tiers[rank - 1]) : ''}`); }
-    return out;
-  };
-  const same = b => b.height === build.body.height && b.weight === build.body.weight && b.wingspan === build.body.wingspan;
-  return <section className="card">
-    <div className="row-head"><h3>Nearby bodies</h3>
-      {state.running ? <button className="mini-btn" onClick={cancel}>Cancel</button>
-        : <button className="mini-btn" onClick={search}>{r ? 'Search again' : 'Search'}</button>}</div>
-    <div className="toggles" role="group" aria-label="Variant">{VARIANTS.map(([id, text, tip]) => <button key={id} title={tip}
-      className={variant === id ? 'on' : ''} aria-pressed={variant === id} onClick={() => setVariant(id)}>{text}</button>)}</div>
-    <p className="muted small">{VARIANTS.find(v => v[0] === variant)[2]} Searches {feet(Math.max(69, h - 2))}–{feet(Math.min(88, h + 2))} {build.body.position}.</p>
-    {state.running && <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
-      {state.progress && ` ${state.progress.done}/${state.progress.total}`}</p>}
-    {state.error && <p className="status-line warn">{state.error}</p>}
-    {r && (r.results.length ? <ul className="offers">{r.results.filter(p => !same(p.body) || diff(p).length).slice(0, 5).map((p, k) => {
-      const changes = diff(p);
-      return <li key={k}>
-        <span><b>{feet(p.body.height)}</b> {p.body.weight} lb · {feet(p.body.wingspan)} WS{same(p.body) && ' (this body)'}</span>
-        <small>{changes.length ? changes.join(' · ') : 'Same badges, ratings rearranged'}</small>
-        <button className="mini-btn" onClick={() => { setBuild({ body: p.body, base: p.manual, breakers: p.breakers });
-          notify(`Switched to ${feet(p.body.height)} ${p.body.weight} lb. Ctrl+Z to undo.`); }}>Use</button>
-      </li>;
-    })}</ul> : <p className="muted small">Nothing nearby keeps those badges.</p>)}
+  const use = p => { setBuild({ base: p.manual, breakers: p.breakers }); setOpen(false); notify('Applied: same badges, re-planned. Ctrl+Z to undo.'); };
+  const metaNow = metaOfD(d);
+  const changesOf = pd => attributes.map((a, i) => ({ a, x: pd.final[i] - d.final[i] })).filter(c => c.x).sort((x, y) => y.x - x.x);
+  return <section className="card recommender">
+    <div className="row-head"><h3>Same breakpoints, better build</h3>
+      <button className="mini-btn" onClick={() => fresh && state.list ? setOpen(true) : run()}>{fresh && state.list ? 'Show options' : 'Re-optimize…'}</button></div>
+    <p className="muted small">Keeps every badge and animation tier this build has, on this body, with {generalNow} Cap Breakers
+      {generalNow > build.budget ? ' (what it uses now, over your budget)' : ''}; re-plans the base ratings, where the breakers go and the
+      archetype, then shows a few ways to spend what that frees.</p>
+    {open && <div className="modal-backdrop" onClick={e => e.target === e.currentTarget && setOpen(false)}>
+      <div className="modal reopt" role="dialog" aria-modal="true" aria-label="Re-optimize options">
+        <div className="row-head"><h3>Same breakpoints · options</h3>
+          <div className="actions">{!state.running && <button className="mini-btn" onClick={run}>Run again</button>}
+            {state.running && <button className="mini-btn" onClick={() => { pool.cancel(); setState(s => ({ ...s, running: false })); }}>Cancel</button>}
+            <button className="mini-btn" aria-label="Close" onClick={() => setOpen(false)}>✕</button></div></div>
+        <p className="muted small">Now: meta {metaNow.toFixed(1)} · {d.breakerCount} breakers. Every option keeps all {d.unlocked.length} badge tiers.</p>
+        {state.running && <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
+          {state.progress?.total ? ` ${state.progress.done}/${state.progress.total}` : ''}</p>}
+        {state.error && <p className="status-line warn">{state.error}</p>}
+        {fresh && state.list && <div className="reopt-list">{state.list.map(x => {
+          if (x.error) return <div key={x.id} className="reopt-option"><b>{x.label}</b> <span className="muted small">{x.error}</span></div>;
+          const changes = changesOf(x.pd), m = metaOfD(x.pd);
+          return <div key={x.id} className="reopt-option">
+            <div className="row-head"><div><b>{x.label}</b> <span className="muted small">{x.blurb}{x.sameAs ? ` About the same as ${x.sameAs}.` : ''}</span></div>
+              <div className="actions"><span className={'reopt-meta ' + (m >= metaNow ? 'up' : 'down')}>meta {metaNow.toFixed(1)} → <b>{m.toFixed(1)}</b></span>
+                <button className="primary mini-btn" disabled={!changes.length} onClick={() => use(x.plan)}>Use this</button></div></div>
+            {changes.length ? <div className="chips">{changes.map(({ a, x: v }) => <span key={a.name} className={'chip ' + (v > 0 ? 'up' : 'down')}>
+              {v > 0 ? '+' : ''}{v} {name(a.name)}</span>)}</div> : <p className="muted small">Same ratings as now: nothing to free.</p>}
+            <details><summary className="small">Full build</summary>
+              <PlanCard plan={x.plan} prefs={prefs} mode={mode} onOpen={use} onSave={onSave} openLabel="Use this" /></details>
+          </div>;
+        })}</div>}
+      </div></div>}
   </section>;
 }

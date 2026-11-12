@@ -26,7 +26,8 @@ export const VARIANTS = [
   { id: 'playmaking', aspects: ['Better handle', 'Better passing'], label: 'More playmaking', blurb: 'Playmaking badges and handle.',
     apply: o => feel(bump(o, byDiscipline('playmaking'), 2), { ball_handle: 2, speed_with_ball: 1.5 }) },
   { id: 'shooting', aspects: ['Better shooting'], label: 'Better shooting', blurb: 'Shooting badges and three point.',
-    apply: o => feel(bump(o, byDiscipline('shooting'), 2), { three_point: 1, mid_range: 0.5 }) },
+    // Post Fade Phenom is a post badge in a shooting jacket: pushing it pours Overall into Post Control.
+    apply: o => feel(bump(o, byDiscipline('shooting').filter(n => n !== 'post_fade_phenom'), 2), { three_point: 1, mid_range: 0.5 }) },
   { id: 'defense', aspects: ['Better perimeter D', 'Better rim protection'], label: 'Better defense', blurb: 'Defensive badges and perimeter defense.',
     apply: o => feel(bump(o, byDiscipline('defense'), 2), { perimeter_defense: 1 }) },
   { id: 'steals', aspects: ['Better perimeter D'], label: 'More steals', blurb: 'Steal, Interceptor and Glove.',

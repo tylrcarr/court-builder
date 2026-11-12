@@ -1,18 +1,20 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { attributes, badgeTier, capsFor, feet, name, positions, tiers, typeWeights } from '../engine.js';
-import { CONTINUOUS_WEIGHTS, IMPORTANCE, MAX_CAP_BREAKERS, SPECIALIZATIONS, archetypeCandidates, byName, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, usesMeta, valueOf } from '../breakpoints.js';
+import { attributes, badgeTier, capsFor, feet, name, playerTypeCount, positions, tiers, typeWeights } from '../engine.js';
+import { CONTINUOUS_WEIGHTS, IMPORTANCE, MAX_CAP_BREAKERS, SPECIALIZATIONS, archetypeCandidates, archetypeScore, byName, nudgeBodies, pickArchetype, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, nearOf, nearOfDerived, usesMeta, valueOf } from '../breakpoints.js';
 import { META_CAPS, metaOf } from '../meta.js';
 import { BROAD_VARIANTS, VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
 import { MODES, ROLES, applyRole, withMode } from '../roles.js';
 import { derive, groups, tierShort } from '../derive.js';
+import { BreakerChartDetails } from './BreakerChart.jsx';
+import { RatingReasons } from './RatingReasons.jsx';
 import { BodyLine, HeightRange, MiniRatings, NumberInput, PositionToggles, Select, TierPill, disciplineColour, label,
   requirementText } from './common.jsx';
 
 export const defaultLab = () => ({
   positions: [], heights: [69, 88], mode: 'both',
   breakers: { general: 8, future: 0, special: { category: 'shooting' } },
-  mustHave: {}, from: null, keepBadges: true,
+  mustHave: {}, from: null, keepBadges: true, thorough: false,
 });
 
 const goalLabel = g => g.label ?? label(g.name);
@@ -45,14 +47,14 @@ export function useOptimize() {
   return [state, run, cancel];
 }
 
-// Runs many optimizer jobs across a pool of workers (one per spare CPU core). runJobs resolves with results in job
+// Runs many optimizer jobs across a pool of workers (one per CPU core: the page itself only waits on them). runJobs resolves with results in job
 // order; cancel() stops everything.
 export function usePool() {
   const workers = useRef([]);
   const token = useRef(0);
   const cancel = () => { workers.current.forEach(w => w.terminate()); workers.current = []; token.current++; };
   useEffect(() => cancel, []);
-  const size = Math.max(2, Math.min(8, (navigator.hardwareConcurrency || 4) - 1));
+  const size = Math.max(2, navigator.hardwareConcurrency || 4);
   const runJobs = (jobs, onDone) => new Promise(resolve => {
     const results = new Array(jobs.length), mine = token.current;
     let next = 0, done = 0;
@@ -96,10 +98,23 @@ export function optimizerOptions(rawPrefs, cfg) {
     minimums, maximums, breakers: cfg.breakers, mustHave, mode: cfg.mode ?? 'both', metaRate: rawPrefs.metaRate ?? 1 };
 }
 
+// Search results survive reloads and tab switches (a comprehensive search takes minutes): the last run is kept, and
+// each saved search keeps the results it had when saved. Stored apart from the searches list so a full storage can
+// only lose results, never the searches themselves.
+const RESULTS_KEY = 'court-builder.lab-results.v1', resultsKey = id => `court-builder.lab-results.${id}.v1`;
+const readResults = key => { try { return JSON.parse(localStorage.getItem(key)); } catch { return null; } };
+const writeResults = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
+const fromSaved = saved => saved?.result ? { running: false, result: saved.result, ms: saved.ms, restored: saved } : { running: false };
+
 export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches, setSearches, onOpen, onCompare, onSave, notify }) {
   const pool = usePool();
-  const [state, setState] = useState({ running: false });
+  const [state, setState] = useState(() => fromSaved(readResults(RESULTS_KEY)));
   const cancel = () => { pool.cancel(); setState(s => ({ ...s, running: false })); };
+  // A finished run is saved as "last results" (restored ones already are).
+  useEffect(() => {
+    if (state.running || !state.result || state.restored) return;
+    writeResults(RESULTS_KEY, { savedAt: Date.now(), thorough: !!cfg.thorough, ms: state.ms, result: state.result });
+  }, [state.result, state.running]);
   const [searchName, setSearchName] = useState('');
   const [overwrite, setOverwrite] = useState(null); // name of an existing search waiting for "Overwrite?"
   const [sortBy, setSortBy] = useState('meta');
@@ -121,7 +136,10 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     const progress = label => (done, total) => live() && setState(s => ({ ...s, progress: { label, done, total } }));
     let opts = optimizerOptions(prefs, cfg);
     const where = { positions: positionsUsed, heights: cfg.heights };
-    const screen = o => pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts: o, keep: MAX_BUILDS } }]);
+    // Comprehensive: twice the bodies through the full optimizer, and every archetype on each (not just the 3 likeliest).
+    const thorough = !!cfg.thorough;
+    const screen = o => pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts: o,
+      keep: (thorough ? MAX_BUILDS * 2 : MAX_BUILDS) + 4 } }]); // a few spare: twins (same body at two positions) merge below
     setState({ running: true, progress: { label: 'Screening bodies' } });
     let [scr] = await screen(opts);
     if (!live()) return;
@@ -147,9 +165,39 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       return setState({ running: false, ms: performance.now() - started,
         result: { results: [], screened: 0, bodies: scr.bodies, blockers: Array.isArray(bl) ? bl : [] } });
     }
-    const plans = await pool.runJobs(scr.chosen.map(c => ({ kind: 'body', options: { body: c.body, pinned: c.pinned, opts } })),
-      progress(`Optimizing bodies (${pool.size} at a time${opts.archetypes ? ', trying archetypes' : ''})`));
+    // Two passes, both spread over every worker: each body in its natural archetype, then the same body forced into
+    // other archetypes (each its own job). An archetype wins on picks + meta (see pickArchetype).
+    const natural = await pool.runJobs(scr.chosen.map(c => ({ kind: 'body', options: { body: c.body, pinned: c.pinned,
+      opts: { ...opts, archetypes: false } } })), progress(`Optimizing bodies (${pool.size} at a time)`));
     if (!live()) return;
+    const alts = natural.flatMap((r, k) => !r || r.error ? [] : (thorough
+      ? Array.from({ length: playerTypeCount(r.body.height) }, (_, t) => t).filter(t => t !== r.playerType)
+      : archetypeCandidates(r, 3)).map(type => ({ k, type, mustHave: r.seed ? { ...opts.mustHave, [r.seed.name]: r.seed.tier } : opts.mustHave })));
+    const forced = await pool.runJobs(alts.map(({ k, type, mustHave }) => ({ kind: 'body', options: { body: natural[k].body,
+      opts: { ...opts, mustHave, forceType: type, archetypes: false, seeds: 0 } } })),
+      progress(`Trying ${thorough ? 'every archetype' : 'other archetypes'} on each body`));
+    if (!live()) return;
+    const plans = natural.map((first, k) => {
+      if (!first || first.error) return first;
+      const mine = forced.filter((x, j) => alts[j].k === k && x && !x.error).map((x, j) => ({ ...x, forcedType: x.playerType }));
+      const best = pickArchetype(first, mine, first.body, opts);
+      return best === first ? first : { ...best, archetypeTrick: true, naturalValue: first.value, naturalType: first.playerType };
+    });
+    // Nudge the leaders' frames: a pound or an inch that opens a breakpoint they just miss (see nudgeBodies). Kept only
+    // when the nudged build is really better (picks + meta, the same rule as archetypes).
+    const leaders = rankPlans(plans.filter(r => r && !r.error), opts).slice(0, thorough ? Infinity : 8);
+    const nudges = leaders.flatMap(r => nudgeBodies(r, thorough ? 5 : 3).map(n => ({ r, ...n })));
+    if (nudges.length) {
+      const nudged = await pool.runJobs(nudges.map(n => ({ kind: 'body', options: { body: n.body, opts } })),
+        progress('Nudging weight and wingspan toward breakpoints'));
+      if (!live()) return;
+      nudged.forEach((x, j) => {
+        const n = nudges[j], k = plans.indexOf(n.r), cur = plans[k];
+        if (!x || x.error || !cur || archetypeScore(x, n.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.5) return;
+        if (n.opens.every(o => x.final[o.i] < o.m)) return; // better, but not for the reason it was tried
+        plans[k] = { ...x, nudged: { from: n.r.body, opens: n.opens.filter(o => x.final[o.i] >= o.m) } };
+      });
+    }
     // Same body dimensions + same ratings at different positions are one build (position only sets the name/meta group).
     const results = [];
     for (const r of rankPlans(plans.filter(r => r && !r.error), opts)) {
@@ -158,6 +206,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       if (twin) twin.alsoPositions = [...(twin.alsoPositions ?? []), r.body.position];
       else results.push(r);
     }
+    results.splice(thorough ? MAX_BUILDS * 2 : MAX_BUILDS);
     // Fewer bodies than result slots: fill the rest with other ways to spend the points on the best bodies — each
     // direction (faster, more playmaking…) re-optimized on that body, keeping only options that really differ.
     let options = [];
@@ -261,9 +310,17 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     const clash = searches.find(x => x.title.toLowerCase() === title.toLowerCase());
     if (clash && !confirmed) { setOverwrite(title); return; }
     const entry = { id: clash?.id ?? crypto.randomUUID(), title, prefs, cfg: { ...cfg, from: null } };
+    // Keep the results on screen with it (if any), so loading it shows them without running again.
+    let kept = false;
+    if (state.result && !state.running) {
+      const saved = state.restored ?? { savedAt: Date.now(), thorough: !!cfg.thorough, ms: state.ms, result: state.result };
+      kept = writeResults(resultsKey(entry.id), saved);
+      if (kept) entry.hasResults = true;
+    } else localStorage.removeItem(resultsKey(entry.id));
     setSearches(list => [entry, ...list.filter(x => x.id !== entry.id)].slice(0, 30));
     setSearchName(''); setOverwrite(null);
-    notify(clash ? `Overwrote search “${title}”.` : `Saved search “${title}”.`);
+    notify((clash ? `Overwrote search “${title}”` : `Saved search “${title}”`)
+      + (kept ? ' with its results.' : state.result ? ' (results too big to keep — storage is full).' : '.'));
   }
 
   return <div className="lab">
@@ -285,8 +342,13 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       {role && <p className="muted small">{role.blurb} Everything not listed is ∅ — adjust below.</p>}
       {searches.length > 0 && <div className="saved-searches"><span className="muted small">Saved:</span>
         {searches.map(s => <span key={s.id} className="chip">
-          <button className="linkish" onClick={() => { setPrefs(s.prefs); setCfg({ ...defaultLab(), ...s.cfg }); notify(`Loaded “${s.title}”.`); }}>{s.title}</button>
-          <button className="linkish" aria-label={`Delete ${s.title}`} onClick={() => setSearches(l => l.filter(x => x.id !== s.id))}>×</button></span>)}</div>}
+          <button className="linkish" title={s.hasResults ? 'Loads its settings and the results it was saved with' : undefined} onClick={() => {
+            setPrefs(s.prefs); setCfg({ ...defaultLab(), ...s.cfg });
+            const saved = s.hasResults ? readResults(resultsKey(s.id)) : null;
+            if (saved) { pool.cancel(); setState(fromSaved(saved)); writeResults(RESULTS_KEY, saved); }
+            notify(`Loaded “${s.title}”${saved ? ' with its results' : ''}.`);
+          }}>{s.title}{s.hasResults ? ' ▤' : ''}</button>
+          <button className="linkish" aria-label={`Delete ${s.title}`} onClick={() => { localStorage.removeItem(resultsKey(s.id)); setSearches(l => l.filter(x => x.id !== s.id)); }}>×</button></span>)}</div>}
 
       {cfg.from && <div className="from-build">
         <div><span className="eyebrow">Starting from</span><b>{fromD.finalName ?? 'Builder build'}</b> <BodyLine body={cfg.from.body} /></div>
@@ -327,10 +389,15 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       </div>
       <div className="run-row">
         <button className="primary big" disabled={state.running} onClick={start}>{state.running ? 'Optimizing…' : 'Find builds'}</button>
+        <label className="check" title="Twice as many bodies through the full optimizer, and every archetype tried on each one. Slower (a few minutes), but it finds the builds where an unusual archetype makes Cap Breakers pay off.">
+          <input type="checkbox" checked={!!cfg.thorough} disabled={state.running} onChange={e => set({ thorough: e.target.checked })} />Comprehensive search</label>
         {state.running && <button onClick={cancel}>Cancel</button>}
         {state.running && <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
           {state.progress?.total ? ` ${state.progress.done}/${state.progress.total}` : ''}</p>}
         {!state.running && state.error && <p className="status-line warn">{state.error}</p>}
+        {!state.running && state.restored && <p className="status-line muted small">Saved results from {new Date(state.restored.savedAt).toLocaleString()}
+          {state.restored.thorough ? ' (comprehensive)' : ''} — run Find builds to refresh.
+          <button className="mini-btn" onClick={() => { localStorage.removeItem(RESULTS_KEY); setState({ running: false }); }}>Clear</button></p>}
         {state.result && <p className="status-line">{state.result.screened} of {state.result.bodies} bodies can meet
           the must-haves and minimums; optimized the {state.result.results.length} with the most room{state.ms ? ` in ${(state.ms / 1000).toFixed(1)} s` : ''}.
           {!state.result.results.length && ' Nothing fits.'}</p>}
@@ -356,7 +423,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         <div className="toggles" role="group" aria-label="Sort">{[['meta', 'Meta score'], ['picks', 'Your picks']].map(([id, text]) =>
           <button key={id} className={sortBy === id ? 'on' : ''} aria-pressed={sortBy === id} onClick={() => setSortBy(id)}>{text}</button>)}</div></div>
       <div className="results">{[...state.result.results].sort((a, b) => sortBy === 'meta'
-        ? metaScore(b.final, b.body.height, b.body.position, cfg.mode) - metaScore(a.final, a.body.height, a.body.position, cfg.mode) || b.value - a.value
+        ? metaScore(b.final, b.body.height, b.body.position, cfg.mode, nearOf(b)) - metaScore(a.final, a.body.height, a.body.position, cfg.mode, nearOf(a)) || b.value - a.value
         : b.value - a.value).map((r, k) =>
         <PlanCard key={k} rank={k + 1} plan={r} prefs={prefs} mode={cfg.mode} current={!!cfg.from && sameBody(r.body, source.body)}
           onOpen={onOpen} onCompare={onCompare} onSave={onSave} />)}</div>
@@ -397,6 +464,7 @@ export function TemplateCard({ plan: p, prefs, mustHave, onOpen, openLabel = 'Op
   const t = p.template;
   const build = { body: p.body, base: t.manual, breakers: t.breakers, budget: p.budget, category: p.category, specialCount: p.specialCount };
   const d = useMemo(() => derive(build), [p]);
+  const [chartOpen, setChartOpen] = useState(false), [focus, setFocus] = useState(null);
   const left = 99 - t.ovr;
   const musts = Object.entries(mustHave ?? {}).filter(([, x]) => x);
   return <article className="result plan is-template">
@@ -404,9 +472,11 @@ export function TemplateCard({ plan: p, prefs, mustHave, onOpen, openLabel = 'Op
       ? 'Your musts, minimums and specialization don’t fit under 99 without Cap Breakers, so this one uses them.'
       : 'Just your musts, minimums and the specialization from base ratings, no Cap Breakers — what every option below starts from.'}</span></div>
     <div className="template-left"><b>{left.toFixed(1)}</b> Overall left to spend <span className="muted small">(uses {t.ovr.toFixed(1)} of 99)</span></div>
-    <MiniRatings final={d.final} caps={d.caps} breakers={d.applied} base={d.ratings} />
+    <MiniRatings final={d.final} caps={d.caps} breakers={d.applied} base={d.ratings}
+      onPick={i => { setFocus(i); setChartOpen(true); }} picked={chartOpen ? focus : null} />
     {musts.length > 0 && <div className="plan-badges"><h4>Musts</h4><div className="chips">{musts.map(([k, tier]) =>
       <span key={k} className="chip">{byName[k].tiers.length > 1 && <TierPill tier={tier} small />} {goalLabel(byName[k])}</span>)}</div></div>}
+    <BreakerChartDetails d={d} open={chartOpen} onToggle={setChartOpen} focus={focus} />
     <footer><button onClick={() => onOpen({ ...build, manual: t.manual })}
       title="Below 99 Overall: spend the rest yourself in the Builder">{openLabel}</button></footer>
   </article>;
@@ -601,12 +671,13 @@ function AnimationChips({ prefs, setPrefs, mustHave, setMustHave }) {
 export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onSave, variant, compareTo, mode = '5v5', openLabel = 'Open in Builder' }) {
   const build = { body: p.body, base: p.manual, breakers: p.breakers, budget: p.budget, category: p.category, specialCount: p.specialCount };
   const d = useMemo(() => derive(build), [p]);
+  const [chartOpen, setChartOpen] = useState(false), [focus, setFocus] = useState(null);
   const nowCount = (p.now ?? p.budget) + (p.specialCount ?? 0);
   const today = useMemo(() => p.today ? new Map(goals.map(b => [b.name, badgeTier(b, p.today, p.body.height)])) : null, [p]);
   const continuous = prefs.continuous.map(k => attributes.find(a => a.name === k).index);
   const reached = goals.map(g => ({ goal: g, tier: badgeTier(g, d.final, p.body.height) }))
     .filter(x => x.tier && (valueOf(prefs, x.goal) > 0 || (usesMeta(prefs, x.goal) && metaOf(x.goal, p.body.position) > 0)));
-  const meta = metaScore(d.final, p.body.height, p.body.position, mode);
+  const meta = metaScore(d.final, p.body.height, p.body.position, mode, nearOfDerived(d));
   const key = reached.filter(x => valueOf(prefs, x.goal) >= 2);
   const other = reached.filter(x => valueOf(prefs, x.goal) < 2);
   const chip = ({ goal, tier }) => {
@@ -623,7 +694,8 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
         title={`${d.x > 0 ? '+' : ''}${d.x} rating points vs #1`}>{d.good ? '▲' : '▼'} {d.text}</span>)}</div>}</div>}
     <header>
       {!variant && <div className="rank">{rank}</div>}
-      <div><h3>{d.finalName ?? 'Unnamed build'}{current && <span className="chip">starting body</span>}</h3><BodyLine body={p.body} also={p.alsoPositions ?? []} /></div>
+      <div><h3>{d.finalName ?? 'Unnamed build'}{current && <span className="chip">starting body</span>}
+</h3><BodyLine body={p.body} also={p.alsoPositions ?? []} /></div>
       <div className="result-stats">
         <span title="Meta score: meta worth × tier (up to the meta's tier caps)">{meta.toFixed(1)}<small>meta</small></span>
         <span title="Your picks: your importance × tier + feel + meta for badges left on Auto">{p.value.toFixed(1)}<small>picks</small></span>
@@ -631,7 +703,8 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
         <span title="Cap Breakers planned">{d.breakerCount}<small>breakers</small></span>
       </div>
     </header>
-    <MiniRatings final={d.final} highlight={continuous} caps={d.caps} breakers={d.applied} base={d.ratings} />
+    <MiniRatings final={d.final} highlight={continuous} caps={d.caps} breakers={d.applied} base={d.ratings}
+      onPick={i => { setFocus(i); setChartOpen(true); }} picked={chartOpen ? focus : null} />
     {key.length > 0 && <div className="plan-badges"><h4>Key</h4><div className="chips">{key.map(chip)}</div></div>}
     {other.length > 0 && <details className="plan-badges"><summary>{other.length} more you care about · {d.unlocked.length} badges total</summary>
       <div className="chips">{other.map(chip)}</div></details>}
@@ -644,6 +717,8 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
           {s.gained.length > 0 && <small> {s.gained.map(g => `${goalLabel(goals.find(x => x.name === g.badge))}${goals.find(x => x.name === g.badge).tiers.length > 1 ? ' ' + tierShort(g.tier) : ''}`).join(', ')}</small>}</li>
       </React.Fragment>)}</ol>
     </details>}
+    <BreakerChartDetails d={d} open={chartOpen} onToggle={setChartOpen} focus={focus} />
+    <RatingReasons d={d} prefs={prefs} />
     <footer>
       <button className="primary" onClick={() => onOpen({ ...build, manual: p.manual })}>{openLabel}</button>
       {onCompare && <button onClick={() => onCompare({ ...build, manual: p.manual })}>Compare</button>}

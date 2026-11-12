@@ -61,18 +61,23 @@ export function TierPill({ tier, small }) {
 }
 
 export function BodyLine({ body, also = [] }) {
-  return <span className="bodyline"><b>{[body.position, ...also].join('/')}</b> · {feet(body.height)} · {body.weight} lb · {feet(body.wingspan)} WS</span>;
+  const order = Object.keys(positions); // PG, SG, SF, PF, C
+  const list = [...new Set([body.position, ...also])].sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return <span className="bodyline"><b>{list.join('/')}</b> · {feet(body.height)} · {body.weight} lb · {feet(body.wingspan)} WS</span>;
 }
 
 // breakers/base (optional): mark attributes raised by Cap Breakers with how much they add (+18), base → final on hover.
-export function MiniRatings({ final, highlight = [], caps, breakers, base }) {
+// onPick (optional): clicking a rating calls onPick(attributeIndex) — result cards open its Cap Breaker chart row.
+export function MiniRatings({ final, highlight = [], caps, breakers, base, onPick, picked = null }) {
   return <div className="mini-ratings">{groups.map(g => <div key={g} className="mini-group">
     {attributes.filter(a => a.discipline === g).map(a => {
       const n = breakers?.[a.index] ?? 0;
-      return <div key={a.name}
-        className={'mini ' + ratingTone(final[a.index]) + (highlight.includes(a.index) ? ' hl' : '') + (n ? ' broke' : '')}
-        title={`${name(a.name)} ${final[a.index]}${n && base ? ` (${base[a.index]} → ${final[a.index]}: +${final[a.index] - base[a.index]} from ${n} Cap Breaker${n > 1 ? 's' : ''})` : ''}${caps ? ' / cap ' + caps[a.index] : ''}`}>
-        <span>{SHORT[a.name]}</span><b>{n > 0 && <i className="broke-n">{base ? `+${final[a.index] - base[a.index]}` : `↑${n}`}</i>}{final[a.index]}</b></div>;
+      const Tag = onPick ? 'button' : 'div';
+      return <Tag key={a.name} {...(onPick ? { type: 'button', onClick: () => onPick(a.index) } : {})}
+        className={'mini ' + ratingTone(final[a.index]) + (highlight.includes(a.index) ? ' hl' : '') + (n ? ' broke' : '')
+          + (onPick ? ' pickable' : '') + (picked === a.index ? ' picked' : '')}
+        title={`${name(a.name)} ${final[a.index]}${n && base ? ` (${base[a.index]} → ${final[a.index]}: +${final[a.index] - base[a.index]} from ${n} Cap Breaker${n > 1 ? 's' : ''})` : ''}${caps ? ' / cap ' + caps[a.index] : ''}${onPick ? ' · click for its Cap Breaker steps' : ''}`}>
+        <span>{SHORT[a.name]}</span><b>{n > 0 && <i className="broke-n">{base ? `+${final[a.index] - base[a.index]}` : `↑${n}`}</i>}{final[a.index]}</b></Tag>;
     })}
   </div>)}</div>;
 }

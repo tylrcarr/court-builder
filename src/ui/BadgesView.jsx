@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { badges, badgeTier, empty, feet, inHeight, name, overall, tiers } from '../engine.js';
+import { attributes, badges, badgeTier, empty, feet, inHeight, name, overall, tiers } from '../engine.js';
 import { cheapestBadge } from '../solver.js';
 import costs from '../badge-costs.json' with { type: 'json' };
 import { derive } from '../derive.js';
@@ -22,13 +22,19 @@ export default function BadgesView({ build, onFindWith }) {
   const [query, setQuery] = useState('');
   const [discipline, setDiscipline] = useState('');
   const [status, setStatus] = useState('all');
+  const [attr, setAttr] = useState(''); // only badges that use this attribute (any tier)
   const [open, setOpen] = useState(null);
   const h = build.body.height;
   const floorOvr = overall(empty(), h).score;
   const rows = badges.map(b => ({ b, tier: badgeTier(b, d.final, h), eligible: inHeight(b, h) }))
     .filter(({ b, tier, eligible }) => (!discipline || b.discipline === discipline)
-      && (!query || b.name.replaceAll('_', ' ').includes(query.toLowerCase()))
+      && (!attr || b.tiers.some(t => t.requirements.some(r => r.name === attr)))
+      // The search box matches badge names and attribute names ("strength" lists every badge that needs it).
+      && (!query || b.name.replaceAll('_', ' ').includes(query.toLowerCase())
+        || b.tiers.some(t => t.requirements.some(r => r.name.replaceAll('_', ' ').includes(query.toLowerCase()))))
       && (status === 'all' || (status === 'unlocked' ? tier : status === 'locked' ? eligible && !tier : !eligible)));
+  const minFor = b => Math.min(...b.tiers.flatMap(t => t.requirements.filter(r => r.name === attr).map(r => r.minimum)), 999);
+  if (attr) rows.sort((x, y) => minFor(x.b) - minFor(y.b));
   const cheapest = useMemo(() => open == null ? null : Object.fromEntries(tiers.map(t => {
     const plan = cheapestBadge(badges.find(b => b.badge === open), t, build.body);
     return [t, plan ? plan.ovr : null];
@@ -42,7 +48,9 @@ export default function BadgesView({ build, onFindWith }) {
           Final ratings after Cap Breakers count toward badges.</p></div>
         <div className="head-stats"><span><b>{d.unlocked.length}</b> unlocked</span><span><b>{totalTokens}</b> tokens to equip all</span></div></div>
       <div className="picker-tools">
-        <input type="search" placeholder="Search badges…" value={query} onChange={e => setQuery(e.target.value)} />
+        <input type="search" placeholder="Search badges or attributes…" value={query} onChange={e => setQuery(e.target.value)} />
+        <select value={attr} onChange={e => setAttr(e.target.value)} aria-label="Attribute">
+          <option value="">Any attribute</option>{attributes.map(a => <option key={a.name} value={a.name}>{name(a.name)}</option>)}</select>
         <select value={discipline} onChange={e => setDiscipline(e.target.value)} aria-label="Category">
           <option value="">All categories</option>{[...new Set(badges.map(b => b.discipline))].map(x => <option key={x} value={x}>{name(x)}</option>)}</select>
         <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status">

@@ -27,7 +27,7 @@ export function derive({ body, base, breakers = zeros(), budget = 0, category = 
     .map(b => ({ badge: b, tier: badgeTier(b, final, body.height) })).filter(x => x.tier);
   const name = buildName(body.position, ratings);
   const finalName = breakerCount ? buildName(body.position, final) : name;
-  return { caps, ratings, state, ladders, applied, final, breakerCount, specialUsed, generalUsed,
+  return { height: body.height, position: body.position, category, caps, ratings, state, ladders, applied, final, breakerCount, specialUsed, generalUsed,
     overBudget: generalUsed > budget, specOk, linkedFloors, unlocked, name, finalName,
     badgePoints: unlocked.reduce((s, x) => s + tiers.indexOf(x.tier) + 1, 0) };
 }
