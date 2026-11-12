@@ -2,7 +2,7 @@
 // carry the most, and builds that really are that archetype. Each breaker step is bigger when the active archetype
 // weighs that attribute lightly (see engine.ladder), so the same 5 breakers can add +5 under one archetype and +18
 // under another. Lightly weighted also means the base rating is cheap in Overall.
-import { attributes, capsFor, defaultBody, ladder, playerTypeCount, typeWeights } from './engine.js';
+import { attributes, capsFor, defaultBody, ladder, playerTypeCount, positions, typeWeights } from './engine.js';
 import { MAX_SPECIALIZED, bodiesFor, metaScore, optimizeBody, specMinimums } from './breakpoints.js';
 import { satisfyAs } from './solver.js';
 
@@ -10,7 +10,13 @@ export const STEPS = 5; // breakers per attribute (the game's limit)
 
 // Lowest base from which `n` breakers reach `target` under `type`, and what they add from there. Steps shrink as the
 // rating climbs, so reaching 90 can take +13 where reaching the cap (98) only gets +7.
+const reachMemo = new Map();
 export function reach(i, target, cap, height, type, n = STEPS) {
+  const key = `${i},${target},${cap},${height},${type},${n}`;
+  if (!reachMemo.has(key)) reachMemo.set(key, reachRaw(i, target, cap, height, type, n));
+  return reachMemo.get(key);
+}
+function reachRaw(i, target, cap, height, type, n) {
   target = Math.min(target, cap);
   for (let b = 25; b < target; b++) {
     const steps = ladder(i, b, cap, height, type).slice(0, n);
@@ -56,6 +62,33 @@ export function nextPickHints(picks, body, targets = {}, minStep = 0) {
   return attributes.map((_, i) => picks.includes(i) ? null : greatRows([...picks, i], body, targets, minStep)[0]?.total ?? 0);
 }
 
+// The same across every position/height you're searching (a mid frame each). Archetype weights change with height and
+// caps with the body, so one preview body can hide an archetype that only works a few inches taller.
+export function rangeBodies(positionList, heights) {
+  const out = [];
+  for (const position of positionList) for (const row of positions[position])
+    if (row.height >= heights[0] && row.height <= heights[1]) out.push(defaultBody(position, row.height));
+  return out;
+}
+// Rows for every body, merged where positions share a height and get the same numbers; best first.
+export function tableAcross(picks, bodies, targets = {}, minStep = 0) {
+  const merged = new Map();
+  for (const body of bodies) for (const row of greatRows(picks, body, targets, minStep)) {
+    const key = [body.height, row.type, ...row.per.map(p => p.base + '>' + p.target)].join();
+    const have = merged.get(key);
+    if (have) have.positions.push(body.position);
+    else merged.set(key, { ...row, height: body.height, positions: [body.position] });
+  }
+  return [...merged.values()].sort((a, b) => b.total - a.total || a.height - b.height);
+}
+export function hintsAcross(picks, bodies, targets = {}, minStep = 0) {
+  const best = attributes.map((_, i) => picks.includes(i) ? null : 0);
+  for (const body of bodies) nextPickHints(picks, body, targets, minStep).forEach((v, i) => { if (v != null && v > best[i]) best[i] = v; });
+  return best;
+}
+// Highest cap each attribute reaches across the bodies (the pick targets' default).
+export const capsAcross = bodies => attributes.map((_, i) => Math.max(25, ...bodies.map(b => capsFor(b)[i])));
+
 const poolFor = breakers => {
   const category = breakers?.special?.category ?? '';
   return { general: breakers?.general ?? 0, special: { category, count: category ? MAX_SPECIALIZED : 0 } };
@@ -63,9 +96,10 @@ const poolFor = breakers => {
 
 // Can this body be `type` with the picks at their targets (finals)? If not, gives up 3 points on one pick at a time
 // (whichever keeps the most), so one hard target doesn't drag the others down; all three only if no single one works.
-function lockIn(body, picks, want, type, pool) {
+function lockIn(body, picks, want, type, pool, need = {}) {
   const caps = capsFor(body), ctx = { body, h: body.height, caps };
-  const floor = specMinimums(pool.special.category);
+  const floor = specMinimums(pool.special.category).map((v, i) => Math.max(v, need[i] ?? 0));
+  if (floor.some((v, i) => v > caps[i])) return null;
   const goal = Object.fromEntries(picks.map(i => [i, targetOf(want, i, caps)]));
   const tryWith = cur => {
     const targets = attributes.map((_, i) => Math.max(floor[i], cur[i] ?? 25));
@@ -87,13 +121,13 @@ function lockIn(body, picks, want, type, pool) {
 }
 
 // Screen bodies × their best-fitting archetypes for ones that can actually be locked in under 99 Overall.
-export function huntScreen(positionList, heights, picks, want, breakers, { perBody = 4, minStep = 0, onProgress } = {}) {
+export function huntScreen(positionList, heights, picks, want, breakers, { perBody = 4, minStep = 0, need = {}, onProgress } = {}) {
   const pool = poolFor(breakers);
   const bodies = bodiesFor(positionList, heights, { frames: 3 });
   const found = [];
   bodies.forEach((body, n) => {
     for (const row of greatRows(picks, body, want, minStep).slice(0, perBody)) {
-      const hit = lockIn(body, picks, want, row.type, pool);
+      const hit = lockIn(body, picks, want, row.type, pool, need);
       if (!hit) continue;
       // How close the picks get to what you asked for (overshoot doesn't count; a frame with a lower cap does).
       const picked = picks.reduce((s, i) => s + Math.min(hit.plan.final[i], want?.[i] || 99), 0);

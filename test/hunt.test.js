@@ -26,3 +26,14 @@ test('hunt builds keep their Cap Breakers on the picked attributes and reach the
     assert.ok(r.final[i] >= want[i], `${attributes[i].name} ${r.final[i]}`);
   }
 });
+
+test('"Also require" minimums hold in every hunt build, and bodies that can\'t reach them are skipped', () => {
+  const dr = ix('defensive_rebound'), need = { [dr]: 85 };
+  const p = picks.slice(0, 2), w = { [p[1]]: 90 };
+  const { found } = huntScreen(['SF'], [79, 79], p, w, breakers, { minStep: 2, need });
+  assert.ok(found.length > 0);
+  const r = huntBuild(pickCandidates(found, { keep: 1 })[0], { values: {}, breakers, mode: 'both', metaRate: 1 });
+  assert.ok(!r.error, r.error);
+  assert.ok(r.final[dr] >= 85, `defensive rebound ${r.final[dr]}`);
+  assert.equal(huntScreen(['SF'], [79, 79], p, w, breakers, { need: { [dr]: 99 } }).found.length, 0);
+});

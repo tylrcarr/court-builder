@@ -550,3 +550,5 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .hunt-result { display: flex; flex-direction: column; gap: 4px; }
 .hunt-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .hunt-attrs button.dead { opacity: 0.35; }
+.hunt .config-block + .config-block { margin-top: 12px; }
+.hunt-need { display: inline-flex; gap: 4px; align-items: center; }

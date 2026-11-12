@@ -23,7 +23,7 @@ self.onmessage = ({ data }) => {
       if (!result.results.length) result.blockers = blockers(options.positions, options.heights, options.opts, { onProgress });
       self.postMessage({ result });
     } else if (kind === 'huntScreen') {
-      self.postMessage({ result: huntScreen(options.positions, options.heights, options.picks, options.want, options.breakers, { minStep: options.minStep }) });
+      self.postMessage({ result: huntScreen(options.positions, options.heights, options.picks, options.want, options.breakers, { minStep: options.minStep, need: options.need }) });
     } else if (kind === 'huntBuild') {
       self.postMessage({ result: huntBuild(options.candidate, options.opts) });
     } else if (kind === 'tradeoffs') {
