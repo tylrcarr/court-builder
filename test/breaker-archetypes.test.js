@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { assess, attributes, capsFor, ladder, resolveLinks } from '../src/engine.js';
 import { derive } from '../src/derive.js';
-import { optimizeBody } from '../src/breakpoints.js';
+import { MAX_CAP_BREAKERS, countFeasible, minBreakers, optimizeBody } from '../src/breakpoints.js';
 import { satisfy, search } from '../src/solver.js';
 
 // Cap Breaker gains depend on the player type, so a build can reach ratings that a planner starting from "every rating
@@ -65,3 +65,17 @@ for (const [position, height] of [['SG', 78], ['PG', 74], ['C', 84], ['C', 86]])
     findsItself(build, 15);
   });
 }
+
+test('when nothing fits, the Lab finds the fewest Cap Breakers that make it fit (up to a year\'s max)', () => {
+  const mustHave = { posterizer: 'hall_of_fame', lightning_launch: 'gold', challenger: 'silver', limitless_range: 'bronze', deadeye: 'silver',
+    sync_snatcher: 'gold', interceptor: 'silver', versatile_visionary: 'silver', high_flying_denier: 'silver' };
+  const minimums = attributes.map(a => ({ ball_handle: 91, interior_defense: 80, speed: 85, agility: 83 })[a.name] ?? 25);
+  const opts = { mustHave, minimums, breakers: { general: 11, future: 0, special: { category: 'shooting' } } };
+  assert.equal(countFeasible(['SG'], [78, 78], opts), 0);
+  const need = minBreakers(['SG'], [78, 78], opts);
+  assert.ok(need > 11 && need <= MAX_CAP_BREAKERS);
+  assert.ok(countFeasible(['SG'], [78, 78], { ...opts, breakers: { ...opts.breakers, general: need } }) > 0);
+  assert.equal(countFeasible(['SG'], [78, 78], { ...opts, breakers: { ...opts.breakers, general: need - 1 } }), 0);
+  // Impossible at any count (Strength above this frame's cap): no answer.
+  assert.equal(minBreakers(['SG'], [78, 78], { ...opts, minimums: attributes.map(a => a.name === 'strength' ? 99 : 25) }), null);
+});

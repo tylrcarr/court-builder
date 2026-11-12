@@ -621,6 +621,22 @@ export function countFeasible(positionList, heights, opts) {
   return n;
 }
 
+// Most general Cap Breakers a player can have in a year. 2K hasn't published it; third-party guides count 28 (20 in
+// Season 1, one more each later season). 5 per attribute at most.
+export const MAX_CAP_BREAKERS = 28;
+
+// Nothing fits with the breakers you have: the fewest total (general now + later) up to MAX_CAP_BREAKERS that lets some
+// body meet the musts and minimums, or null.
+export function minBreakers(positionList, heights, opts) {
+  const have = (opts.breakers?.general ?? 0) + (opts.breakers?.future ?? 0);
+  const fitsWith = total => countFeasible(positionList, heights,
+    { ...opts, breakers: { ...opts.breakers, general: total - (opts.breakers?.future ?? 0) } }) > 0;
+  if (have >= MAX_CAP_BREAKERS || !fitsWith(MAX_CAP_BREAKERS)) return null;
+  let lo = have, hi = MAX_CAP_BREAKERS; // lo doesn't fit, hi does
+  while (hi - lo > 1) { const mid = (lo + hi) >> 1; if (fitsWith(mid)) hi = mid; else lo = mid; }
+  return hi;
+}
+
 // Nothing fits: which single must (dropped, or one tier lower) or minimum (removed) opens up the most bodies?
 export function blockers(positionList, heights, opts, { onProgress } = {}) {
   const tries = [];

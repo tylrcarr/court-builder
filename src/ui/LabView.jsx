@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { attributes, badgeTier, capsFor, feet, name, positions, tiers, typeWeights } from '../engine.js';
-import { CONTINUOUS_WEIGHTS, IMPORTANCE, SPECIALIZATIONS, archetypeCandidates, byName, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, usesMeta, valueOf } from '../breakpoints.js';
+import { CONTINUOUS_WEIGHTS, IMPORTANCE, MAX_CAP_BREAKERS, SPECIALIZATIONS, archetypeCandidates, byName, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, usesMeta, valueOf } from '../breakpoints.js';
 import { META_CAPS, metaOf } from '../meta.js';
 import { BROAD_VARIANTS, VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
@@ -119,12 +119,27 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     const mine = pool.token.current, started = performance.now();
     const live = () => mine === pool.token.current;
     const progress = label => (done, total) => live() && setState(s => ({ ...s, progress: { label, done, total } }));
-    const opts = optimizerOptions(prefs, cfg);
+    let opts = optimizerOptions(prefs, cfg);
     const where = { positions: positionsUsed, heights: cfg.heights };
+    const screen = o => pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts: o, keep: MAX_BUILDS } }]);
     setState({ running: true, progress: { label: 'Screening bodies' } });
-    const [scr] = await pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts, keep: MAX_BUILDS } }]);
+    let [scr] = await screen(opts);
     if (!live()) return;
     if (scr.error) return setState({ running: false, error: scr.error });
+    // Nothing fits with your breakers: find the version with as few extra as it takes (up to a year's worth) and show it.
+    let needs = null;
+    if (!scr.chosen.length) {
+      setState(s => ({ ...s, progress: { label: 'Checking how many Cap Breakers it needs' } }));
+      const [total] = await pool.runJobs([{ kind: 'minBreakers', options: { ...where, opts } }]);
+      if (!live()) return;
+      if (typeof total === 'number') {
+        const have = opts.breakers.general + (opts.breakers.future ?? 0);
+        opts = { ...opts, breakers: { ...opts.breakers, general: total - (opts.breakers.future ?? 0) } };
+        [scr] = await screen(opts);
+        if (!live()) return;
+        if (scr.chosen?.length) needs = { have, total };
+      }
+    }
     if (!scr.chosen.length) {
       setState(s => ({ ...s, progress: { label: 'Finding what blocks the search' } }));
       const [bl] = await pool.runJobs([{ kind: 'blockers', options: { ...where, opts } }]);
@@ -226,7 +241,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         for (const list of perLeader) if (list[k] && options.length < open) options.push(list[k]);
     }
     if (armsFailed.size) notes.push(`No longer-arms option: your must-have badges don't fit on ${[...armsFailed].join(', ')}. Each inch of wingspan lowers shooting caps by about 2.`);
-    setState({ running: false, ms: performance.now() - started, result: { results, options, notes, screened: scr.screened, bodies: scr.bodies } });
+    setState({ running: false, ms: performance.now() - started, result: { results, options, notes, screened: scr.screened, bodies: scr.bodies, needs } });
   }
 
   function pickRole(r) {
@@ -319,6 +334,11 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         {state.result && <p className="status-line">{state.result.screened} of {state.result.bodies} bodies can meet
           the must-haves and minimums; optimized the {state.result.results.length} with the most room{state.ms ? ` in ${(state.ms / 1000).toFixed(1)} s` : ''}.
           {!state.result.results.length && ' Nothing fits.'}</p>}
+        {!state.running && state.result?.needs && <div className="needs-breakers warn small">
+          Doesn't fit with your {state.result.needs.have} Cap Breakers. These builds use <b>{state.result.needs.total}</b> — the fewest that
+          make it work (a year's max is about {MAX_CAP_BREAKERS}).
+          <button className="mini-btn" onClick={() => { set(c => ({ breakers: { ...c.breakers, general: state.result.needs.total - (c.breakers.future ?? 0) } }));
+            notify(`Lab set to ${state.result.needs.total} Cap Breakers.`); }}>Use {state.result.needs.total}</button></div>}
         {!state.running && state.result && !state.result.results.length && <Blockers list={state.result.blockers ?? []}
           apply={x => {
             for (const b of x.changes) {

@@ -534,3 +534,4 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .an-list li > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .an-list li small { margin-left: auto; white-space: nowrap; color: var(--low); font-size: .72rem; }
 @media (max-width: 1250px) { .to-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .an-groups, .an-list { grid-template-columns: 1fr; } }
+.needs-breakers { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }

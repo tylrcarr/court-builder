@@ -42,6 +42,8 @@ filled to 99 Overall, as the game requires.
   - Per-attribute feel, minimums and maximums.
   - Results show badges, meta score and breakers. Variations (faster, more playmaking, better defense, no
     dunking…) keep results from all being the same build.
+  - Nothing fits with your Cap Breakers? It shows the builds with the fewest extra that make it work (up to 28, a
+    year's worth per third-party guides; 2K hasn't published a total), with a button to use that many.
   - "What's blocking it" explains searches with no results. Searches can be saved.
 - **Builder**
   - Body controls, attribute sliders with linked minimums, body caps and the 99 Overall budget, and Cap Breaker

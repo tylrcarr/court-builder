@@ -1,4 +1,4 @@
-import { blockers, bodiesFor, optimizeAcross, optimizeBodyFull, screenBodies, tradeOffs } from './breakpoints.js';
+import { blockers, bodiesFor, minBreakers, optimizeAcross, optimizeBodyFull, screenBodies, tradeOffs } from './breakpoints.js';
 
 // Jobs: 'screen' (which bodies are worth optimizing), 'body' (one body, all archetypes worth trying), 'blockers'
 // (why nothing fits), plus the single-thread 'across' and 'tradeoffs' used by the Builder.
@@ -12,6 +12,8 @@ self.onmessage = ({ data }) => {
       self.postMessage({ result: r });
     } else if (kind === 'body') {
       self.postMessage({ result: optimizeBodyFull(options.body, options.opts, { pinned: options.pinned }) });
+    } else if (kind === 'minBreakers') {
+      self.postMessage({ result: minBreakers(options.positions, options.heights, options.opts) });
     } else if (kind === 'blockers') {
       self.postMessage({ result: blockers(options.positions, options.heights, options.opts, { onProgress }) });
     } else if (kind === 'across') {
