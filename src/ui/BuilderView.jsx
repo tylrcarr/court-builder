@@ -7,6 +7,7 @@ import { BROAD_VARIANTS, FOCUS_GROUPS, VARIANTS as DIRECTIONS } from '../variant
 import { capsFor } from '../engine.js';
 import { buildImage } from './buildImage.js';
 import BadgePreview from './BadgePreview.jsx';
+import { AnimationPanel, TakeoverPanel } from './Unlocks.jsx';
 import { derive, groups, nearBadges, tierShort, zeros } from '../derive.js';
 import { Bar, NumberInput, Select, TierPill, disciplineColour, label, ratingTone, requirementText } from './common.jsx';
 import { shareUrl } from '../share.js';
@@ -263,6 +264,8 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
       </section>
 
       <BadgePreview build={build} d={d} setBuild={setBuild} />
+      <TakeoverPanel d={d} setPrefs={setPrefs} notify={notify} />
+      <AnimationPanel d={d} height={body.height} setPrefs={setPrefs} notify={notify} />
       </div>
 
       <aside className="side">

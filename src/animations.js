@@ -22,7 +22,7 @@ export const animations = [
   goal(9, 'pro_contact_oop', 'Pro contact alley-oop', ALL, { driving_dunk: 84, vertical: 70 }, 'Alley-oops'),
   goal(10, 'elite_contact_oop', 'Elite contact alley-oop', ALL, { driving_dunk: 92, vertical: 80 }, 'Alley-oops'),
   goal(11, 'small_contact_oop', 'Small contact alley-oop', SMALL, { driving_dunk: 86, vertical: 85 }, 'Alley-oops'),
-  goal(12, 'bigman_contact_oop', 'Bigman contact alley-oop', BIG, { driving_dunk: 70, standing_dunk: 85 }, 'Alley-oops'),
+  goal(12, 'bigman_contact_oop', 'Bigman contact alley-oop', BIG, { driving_dunk: 70, standing_dunk: 85, vertical: 60 }, 'Alley-oops'),
 ];
 
 // Old keys (one "Pro"/"Elite" row at 90/96 Driving Dunk) map to the off-two packages.

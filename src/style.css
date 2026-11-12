@@ -512,3 +512,25 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .bp-group h4 { display: flex; gap: 6px; align-items: baseline; }
 .bp-budget { margin-left: auto; text-transform: none; letter-spacing: 0; font-size: .74rem; color: var(--muted); font-weight: 600; }
 .bp-budget.over { color: var(--warn); }
+/* Takeovers and animations */
+.takeovers .row-head { align-items: baseline; gap: 12px; }
+.to-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px 16px; }
+.to-slot h4, .an-group h4 { margin: 6px 0 4px; font-size: .68rem; text-transform: uppercase; letter-spacing: .08em; color: var(--accent); }
+.to-row { display: flex; gap: 6px; align-items: center; padding: 2px 4px; font-size: .82rem; color: var(--muted); border-radius: 6px; }
+.to-row.on { color: var(--text); background: rgba(182, 242, 58, .06); }
+.to-row > span { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.to-row small { color: var(--warn); font-variant-numeric: tabular-nums; }
+.animations .bp-stats input[type=search] { width: 200px; }
+.an-groups { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px 18px; align-items: start; }
+.an-group.open { grid-column: 1 / -1; }
+.an-head { display: grid; grid-template-columns: minmax(0, 1fr) 70px minmax(0, 1.4fr); gap: 8px; width: 100%; text-align: left; align-items: center;
+  background: transparent; border-color: transparent; padding: 4px 6px; font-size: .84rem; }
+.an-head:hover, .an-group.open .an-head { background: rgba(255, 255, 255, .04); }
+.an-head small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-count { font-variant-numeric: tabular-nums; color: var(--lime); font-weight: 700; }
+.an-list { list-style: none; margin: 4px 0 8px; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 18px; max-height: 340px; overflow: auto; }
+.an-list li { display: flex; gap: 8px; align-items: center; font-size: .8rem; padding: 1px 6px; border-radius: 6px; color: var(--muted); }
+.an-list li.on { color: var(--text); }
+.an-list li > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.an-list li small { margin-left: auto; white-space: nowrap; color: var(--low); font-size: .72rem; }
+@media (max-width: 1250px) { .to-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .an-groups, .an-list { grid-template-columns: 1fr; } }
