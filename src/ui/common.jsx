@@ -35,8 +35,16 @@ export function NumberInput({ title, value, min = 25, max = 99, onChange, classN
     const ok = onChange(draft === '' ? value : n);
     setDraft(String(ok === false ? value : draft === '' ? value : n));
   };
+  // Apply a valid value right away: Firefox's spinner arrows change the number without focusing the box, so it never
+  // blurs and a blur-only commit would show the new number but never save it. Out-of-range drafts (typing "9" on the way
+  // to "91") wait for blur/Enter, which clamps them.
+  const edit = text => {
+    setDraft(text);
+    const n = Number(text);
+    if (text !== '' && Number.isInteger(n) && n >= min && n <= max && n !== value && onChange(n) === false) setDraft(String(value));
+  };
   return <input className={'num ' + className} aria-label={title} type="number" min={min} max={max} value={draft}
-    onChange={e => setDraft(e.target.value)} onBlur={commit}
+    onChange={e => edit(e.target.value)} onBlur={commit}
     onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />;
 }
 

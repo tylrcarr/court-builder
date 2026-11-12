@@ -3,7 +3,7 @@
 // The in-game builder requires every build to be filled to 99 Overall, so "budget" here means
 // how the 99 is spent, not how much is left over.
 import { alternatives, attributes, badgeTier, badges, capsFor, defaultBody, inHeight, ladder, mergeFloors,
-  overall, overallAs, positions, resolveLinks, tiers } from './engine.js';
+  overall, overallAs, playerTypeCount, positions, resolveLinks, tiers } from './engine.js';
 
 const N = attributes.length;
 const LIMIT = 99 + 1e-8;
@@ -39,7 +39,20 @@ function isEligible(i, special) {
 }
 
 // Satisfy final-rating targets on one body, using breakers where they save the most Overall.
-export function satisfy(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}) {
+export function satisfy(targets, ctx, pool = {}) {
+  const plan = satisfyNatural(targets, ctx, pool);
+  if (plan || !(pool.general || pool.special?.count) || targets.some((t, i) => t > ctx.caps[i])) return plan;
+  // Breaker gains depend on the player type, and planning from the all-base starting point locks in whatever archetype
+  // that is (often a poor one for breakers). If it doesn't fit, plan for each archetype and keep the cheapest that does.
+  let best = null;
+  for (let type = 0; type < playerTypeCount(ctx.h); type++) {
+    const p = satisfyAs(targets, ctx, pool, type);
+    if (p && (!best || p.ovr < best.ovr)) best = p;
+  }
+  return best;
+}
+
+function satisfyNatural(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}) {
   // Breakers never raise a rating past the body's physical cap.
   if (targets.some((t, i) => t > ctx.caps[i])) return null;
   const k = new Array(N).fill(0);
@@ -93,7 +106,11 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
   const k = new Array(N).fill(0);
   let floors = [...targets];
   let generalLeft = general, specialLeft = special.count ?? 0;
-  let cur = overallAs(clampLinks(floors, ctx.h, ctx.caps), ctx.h, type);
+  // Each breaker is picked by what it takes off the real Overall (the best archetype's score), not just `type`'s: lowering
+  // a base rating the leading archetype weighs heavily (e.g. steal under a lockdown type) is what lets `type` take over.
+  // Ties (the leader didn't move) go to the biggest drop in `type`'s own score.
+  const both = f => { const b = clampLinks(f, ctx.h, ctx.caps); return [score(b, ctx.h).score, overallAs(b, ctx.h, type)]; };
+  let [cur, curAs] = both(floors);
   for (let round = 0; round < general + (special.count ?? 0); round++) {
     let best = null;
     for (let i = 0; i < N; i++) {
@@ -103,12 +120,14 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
       const b = baseForTarget(i, targets[i], k[i] + 1, ctx, type);
       if (b == null || b >= floors[i]) continue;
       const trialFloors = floors.map((f, j) => j === i ? b : f);
-      const s = overallAs(clampLinks(trialFloors, ctx.h, ctx.caps), ctx.h, type);
-      const saving = cur - s;
-      if (saving > 1e-9 && (!best || saving > best.saving)) best = { i, trialFloors, s, saving, useSpecial };
+      const [s, sAs] = both(trialFloors);
+      const saving = cur - s, own = curAs - sAs;
+      if (saving < -1e-9 || (saving <= 1e-9 && own <= 1e-9)) continue;
+      const key = Math.max(0, saving) * 1e3 + own;
+      if (!best || key > best.key) best = { i, trialFloors, s, sAs, key, useSpecial };
     }
     if (!best) break;
-    k[best.i]++; floors = best.trialFloors; cur = best.s;
+    k[best.i]++; floors = best.trialFloors; cur = best.s; curAs = best.sAs;
     if (best.useSpecial) specialLeft--; else generalLeft--;
   }
   // Make `type` the player type: raise whichever base rating closes the gap to the leading archetype fastest.

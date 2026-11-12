@@ -14,7 +14,7 @@ import { shareUrl } from '../share.js';
 
 const choose = (values, i, v) => values.map((old, j) => j === i ? v : old);
 
-export default function BuilderView({ build, setBuild, onSave, notify, library, undo, redo, onSendToLab, prefs, setPrefs, labCfg }) {
+export default function BuilderView({ build, setBuild, onSave, notify, library, undo, redo, onSendToLab, onFindExact, prefs, setPrefs, labCfg }) {
   const { body, base, breakers } = build;
   const d = useMemo(() => derive(build), [build]);
   const [locks, setLocks] = useState(() => attributes.map(() => false));
@@ -231,6 +231,7 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
         <button onClick={copyLink}>Copy link</button>
         <button aria-expanded={exportOpen} onClick={() => setExportOpen(!exportOpen)}>Text</button>
         <button onClick={() => onSendToLab(build)} title="Keep this build's badges as must-haves and search nearby bodies">Send to Lab</button>
+        <button onClick={() => onFindExact(build)} title="New Lab search with every rating of this build as a minimum (same body and breakers): checks the Lab can find it">Find exact</button>
         <span className="spacer" />
         <button onClick={undo} disabled={!undo} title="Undo (Ctrl+Z)">↶</button>
         <button onClick={redo} disabled={!redo} title="Redo (Ctrl+Y)">↷</button>

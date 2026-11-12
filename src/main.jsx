@@ -119,6 +119,15 @@ function App() {
       breakers: { ...l.breakers, general: b.budget, special: { category: b.category } } }));
     setView('lab'); notify('Build sent to the Lab: its badges are kept as must-haves. Widen positions/heights to find similar bodies.');
   };
+  // A new Lab search for exactly this build: every rating (after Cap Breakers) as a minimum, its body, its breaker count.
+  // Replaces the Lab's musts, minimums and maximums (the minimums already hold every badge it has), then runs.
+  const findExact = b => {
+    const bd = derive(b);
+    setPrefs(p => ({ ...p, minimums: Object.fromEntries(attributes.map((a, i) => [a.name, bd.final[i]]).filter(([, v]) => v > 25)), maximums: {} }));
+    setLab(l => ({ ...l, from: null, keepBadges: false, mustHave: {}, positions: [b.body.position], heights: [b.body.height, b.body.height],
+      breakers: { general: Math.max(b.budget ?? 0, bd.generalUsed), future: 0, special: { category: b.category } }, runNow: Date.now() }));
+    setView('lab'); notify('Lab: every rating of this build is a minimum. Searching…');
+  };
 
   return <div className="app">
     <header className="topbar">
@@ -133,7 +142,7 @@ function App() {
     <main>
       {view === 'builder' && <BuilderView build={build} setBuild={setBuild} onSave={save} notify={notify} library={library}
         undo={undoStack.current.past.length ? undo : null} redo={undoStack.current.future.length ? redo : null}
-        prefs={prefs} setPrefs={setPrefs} onSendToLab={sendToLab} labCfg={lab} />}
+        prefs={prefs} setPrefs={setPrefs} onSendToLab={sendToLab} onFindExact={findExact} labCfg={lab} />}
       {view === 'lab' && <LabView build={build} prefs={prefs} setPrefs={setPrefs} cfg={lab} setCfg={setLab} searches={searches}
         setSearches={setSearches} notify={notify} onOpen={open} onCompare={addCompare} onSave={save} />}
       {view === 'reference' && <>

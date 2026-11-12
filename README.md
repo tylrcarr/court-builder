@@ -27,8 +27,10 @@ tier it unlocks buys nothing. The Lab optimizes **badge-first**:
    whatever budget is left.
 
 Cap Breakers are planned per archetype: breaker gains depend on the build's player type, so the solver can push a
-build into a different archetype when that makes breakers elsewhere go further. Every result is filled to 99
-Overall, as the game requires.
+build into a different archetype when that makes breakers elsewhere go further. If the plan from the build's natural
+archetype doesn't fit under 99, every archetype is tried, with each breaker chosen by what it takes off the real
+Overall (so it can lower a rating the leading archetype weighs heavily and let a better one take over). Every result is
+filled to 99 Overall, as the game requires.
 
 ## Features
 
@@ -57,6 +59,8 @@ Overall, as the game requires.
     dribble moves…) for this height's size family: unlocked counts per group, the closest locked ones, and search.
     "Lab" adds the ratings an animation or takeover needs to the Lab's minimums.
   - Live build name, share links, text export, full-build screenshot, save.
+  - **Find exact**: a new Lab search with every rating of the build as a minimum, on its body with its breaker
+    count, to check the Lab can find it.
 - **Reference** — all 53 badges with official tier requirements, height ranges, token costs and the cheapest share
   of the Overall budget each tier needs on your body; plus a caps heatmap for every height with weight and
   wingspan sweeps.

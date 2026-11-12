@@ -110,6 +110,9 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
   const keptCount = useMemo(() => fromD ? heldTiers(fromD.final, cfg.from.body.height, prefs).size : 0, [fromD, prefs]);
   const role = ROLES.find(r => r.id === prefs.role);
 
+  // "Find exact" from the Builder asks for a run as soon as the Lab opens.
+  useEffect(() => { if (cfg.runNow) { set({ runNow: undefined }); start(); } }, [cfg.runNow]);
+
   // Screen bodies → optimize each kept body (natural + promising archetypes) in parallel → variations of the leaders.
   async function start() {
     pool.cancel();
