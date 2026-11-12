@@ -101,17 +101,27 @@ function satisfyNatural(targets, ctx, { general = 0, special = { category: '', c
 // build really is that archetype (its player type). Breaker gains depend on the player type — an attribute with a low
 // weight in the active archetype gains much more per breaker — so pushing the build into another archetype (e.g. an
 // 81 standing dunk on a 6'8") can make breakers elsewhere jump further. Returns null if it can't get there under 99.
-export function satisfyAs(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}, type) {
+// preset ({ attributeIndex: count }, optional): breakers reserved for those attributes before the greedy pick (the
+// Breaker Hunt keeps its breakers on the attributes you picked even when another spot would save a bit more Overall).
+export function satisfyAs(targets, ctx, { general = 0, special = { category: '', count: 0 }, preset = null } = {}, type) {
   if (targets.some((t, i) => t > ctx.caps[i])) return null;
   const k = new Array(N).fill(0);
   let floors = [...targets];
   let generalLeft = general, specialLeft = special.count ?? 0;
+  for (const [key, n] of Object.entries(preset ?? {})) {
+    const i = Number(key), take = Math.min(n, generalLeft, 5);
+    if (take <= 0 || targets[i] <= 25) continue;
+    const b = baseForTarget(i, targets[i], take, ctx, type);
+    if (b == null) continue;
+    k[i] = take; floors[i] = Math.min(floors[i], b); generalLeft -= take;
+  }
   // Each breaker is picked by what it takes off the real Overall (the best archetype's score), not just `type`'s: lowering
   // a base rating the leading archetype weighs heavily (e.g. steal under a lockdown type) is what lets `type` take over.
   // Ties (the leader didn't move) go to the biggest drop in `type`'s own score.
   const both = f => { const b = clampLinks(f, ctx.h, ctx.caps); return [score(b, ctx.h).score, overallAs(b, ctx.h, type)]; };
   let [cur, curAs] = both(floors);
-  for (let round = 0; round < general + (special.count ?? 0); round++) {
+  const rounds = generalLeft + specialLeft;
+  for (let round = 0; round < rounds; round++) {
     let best = null;
     for (let i = 0; i < N; i++) {
       if (targets[i] <= 25 || k[i] >= 5) continue;

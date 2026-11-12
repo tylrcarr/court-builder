@@ -1,3 +1,4 @@
+import { huntBuild, huntScreen } from './hunt.js';
 import { blockers, bodiesFor, minBreakers, optimizeAcross, optimizeBodyFull, screenBodies, tradeOffs } from './breakpoints.js';
 
 // Jobs: 'screen' (which bodies are worth optimizing), 'body' (one body, all archetypes worth trying), 'blockers'
@@ -21,6 +22,10 @@ self.onmessage = ({ data }) => {
       const result = optimizeAcross(bodies, { ...options.opts, pinFirst: !!options.around }, { onProgress, keep: options.keep ?? 10 });
       if (!result.results.length) result.blockers = blockers(options.positions, options.heights, options.opts, { onProgress });
       self.postMessage({ result });
+    } else if (kind === 'huntScreen') {
+      self.postMessage({ result: huntScreen(options.positions, options.heights, options.picks, options.want, options.breakers) });
+    } else if (kind === 'huntBuild') {
+      self.postMessage({ result: huntBuild(options.candidate, options.opts) });
     } else if (kind === 'tradeoffs') {
       self.postMessage({ result: tradeOffs(options.plan, options.opts, { onProgress, focus: options.focus ?? null }) });
     }

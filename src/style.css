@@ -535,3 +535,17 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border-radius: 
 .an-list li small { margin-left: auto; white-space: nowrap; color: var(--low); font-size: .72rem; }
 @media (max-width: 1250px) { .to-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .an-groups, .an-list { grid-template-columns: 1fr; } }
 .needs-breakers { flex-basis: 100%; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
+
+/* Breaker Hunt (test tab) */
+.hunt-attrs { display: flex; flex-wrap: wrap; gap: 6px; }
+.hunt-attrs button { padding: 4px 10px; }
+.hunt-attrs button.on { background: rgba(255, 90, 31, .18); border-color: var(--accent); color: var(--accent2); font-weight: 700; }
+.hunt-attrs button.hint-best { outline: 1px solid var(--lime); }
+.hunt-attrs small { opacity: 0.7; }
+.hunt-targets { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-top: 10px; }
+.hunt-targets p { flex-basis: 100%; margin: 0; }
+.hunt-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.hunt-table th, .hunt-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+.hunt-table tr.best td { background: rgba(255,90,31,0.10); }
+.hunt-result { display: flex; flex-direction: column; gap: 4px; }
+.hunt-strip { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }

@@ -8,6 +8,7 @@ import { BodyLine, MiniRatings } from './ui/common.jsx';
 import BuilderView from './ui/BuilderView.jsx';
 import { MAX_SPECIALIZED, defaultPrefs } from './breakpoints.js';
 import LabView, { defaultLab } from './ui/LabView.jsx';
+import HuntView from './ui/HuntView.jsx';
 import BadgesView from './ui/BadgesView.jsx';
 import CompareView from './ui/CompareView.jsx';
 import ExplorerView from './ui/ExplorerView.jsx';
@@ -17,6 +18,7 @@ const KEYS = { build: 'court-builder.build.v2', library: 'court-builder.saved-bu
   compare: 'court-builder.compare.v1', prefs: 'court-builder.prefs.v3', searches: 'court-builder.searches.v1' };
 const VIEWS = [
   ['builder', 'Builder', 'Hand-tune a build'], ['lab', 'Build Lab', 'Badge-first optimizer across bodies'],
+  ['hunt', 'Breaker Hunt', 'Test: pick attributes for Cap Breakers, find the archetype that carries them'],
   ['reference', 'Reference', 'Badge requirements and body caps'], ['compare', 'Compare', 'Side by side'], ['saved', 'Saved', 'Your library'],
 ];
 
@@ -145,6 +147,7 @@ function App() {
         prefs={prefs} setPrefs={setPrefs} onSendToLab={sendToLab} onFindExact={findExact} labCfg={lab} />}
       {view === 'lab' && <LabView build={build} prefs={prefs} setPrefs={setPrefs} cfg={lab} setCfg={setLab} searches={searches}
         setSearches={setSearches} notify={notify} onOpen={open} onCompare={addCompare} onSave={save} />}
+      {view === 'hunt' && <HuntView prefs={prefs} labCfg={lab} notify={notify} onOpen={open} onCompare={addCompare} onSave={save} />}
       {view === 'reference' && <>
         <div className="toggles ref-tabs" role="group" aria-label="Reference">
           <button className={refTab === 'badges' ? 'on' : ''} aria-pressed={refTab === 'badges'} onClick={() => setRefTab('badges')}>Badges</button>

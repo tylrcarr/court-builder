@@ -455,7 +455,7 @@ function aspectsOf(p, ref, variant) {
 }
 const sameBody = (a, b) => a.position === b.position && a.height === b.height && a.weight === b.weight && a.wingspan === b.wingspan;
 
-function BreakerPlan({ value, onChange }) {
+export function BreakerPlan({ value, onChange }) {
   const category = value.special?.category ?? '';
   const spec = SPECIALIZATIONS[category];
   return <>

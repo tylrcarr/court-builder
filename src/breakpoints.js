@@ -290,7 +290,7 @@ function optimizeOnce(body, opts) {
   opts = { ...opts, position: body.position, height: body.height }; // meta is position- and height-aware
   const ctx = ctxFor(body);
   // forceType: plan every Cap Breaker as that archetype and keep the build in it (see satisfyAs).
-  ctx.solve = opts.forceType != null ? (t, c, p) => satisfyAs(t, c, p, opts.forceType) : satisfy;
+  ctx.solve = opts.forceType != null ? (t, c, p) => satisfyAs(t, c, { ...p, preset: opts.presetBreakers }, opts.forceType) : satisfy;
   // Per-attribute maximums (final rating): nothing worth paying for above them, e.g. driving layup 85 next to a 99 dunk.
   const maxes = attributes.map((_, i) => Math.min(ctx.caps[i], opts.maximums?.[i] ?? 99));
   const ok = t => t.every((v, i) => v <= maxes[i]);
