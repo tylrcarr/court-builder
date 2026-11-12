@@ -49,7 +49,10 @@ Overall, as the game requires.
     budget in feel attributes.
   - **Within reach** badges with one-click unlock (trades budget without losing a badge), **Maximize** badges,
     trade-offs and options for this body, and nearby bodies.
-  - Live build name, share links, text export, save.
+  - **Cap Breakers** section laid out like the in-game screen: base → final against the cap, with each ladder.
+  - **Badge preview** by discipline with token costs and planned **Synergy** (Fuse / Reaction, +1 / +2 up to
+    Legend). You set how many Synergy slots you have, since they're earned over a season.
+  - Live build name, share links, text export, full-build screenshot, save.
 - **Reference** — all 53 badges with official tier requirements, height ranges, token costs and the cheapest share
   of the Overall budget each tier needs on your body; plus a caps heatmap for every height with weight and
   wingspan sweeps.

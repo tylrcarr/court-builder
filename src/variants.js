@@ -41,3 +41,39 @@ export const VARIANTS = [
   { id: 'no-dunk', label: 'No dunking', blurb: 'Driving dunk capped at 69: the points go elsewhere.',
     apply: o => cap({ ...o, values: { ...o.values, posterizer: 0, ...Object.fromEntries(animations.map(g => [g.name, 0])) } }, { driving_dunk: 69 }) },
 ];
+
+// "Any of" directions for the Lab's extra slots: value a whole group of badges and lightly weight all of its attributes,
+// so the optimizer picks whichever is cheapest on that body (on a big, close shots or layups before dunks).
+const PERIMETER_D = ['challenger', 'pick_dodger', 'off_ball_pest', 'glove', 'interceptor', 'immovable_enforcer', 'seatbelt', 'ankle_braces'];
+const RIM_D = ['paint_patroller', 'wall_up', 'high_flying_denier', 'post_lockdown', 'off_ball_pest'];
+const anyOf = (names, attrs, w = 0.7) => o => feel(bump(o, names, 2), Object.fromEntries(attrs.map(a => [a, w])));
+export const BROAD_VARIANTS = [
+  { id: 'any-inside', aspects: ['Better layups', 'Better dunking', 'Better standing dunk', 'Better post game'], label: 'Any interior scoring',
+    blurb: 'Layups, close shots, dunks or post — whichever is cheapest on this body.',
+    apply: anyOf([...byDiscipline('finishing'), ...animations.map(g => g.name)], ['close_shot', 'driving_layup', 'driving_dunk', 'standing_dunk', 'post_control'], 0.6) },
+  { id: 'any-shooting', aspects: ['Better shooting'], label: 'Any shooting', blurb: 'Threes or mid-range, whichever is cheaper.',
+    apply: anyOf(byDiscipline('shooting'), ['three_point', 'mid_range'], 0.8) },
+  { id: 'any-playmaking', aspects: ['Better handle', 'Better passing'], label: 'Any playmaking', blurb: 'Passing or handle, whichever is cheaper.',
+    apply: anyOf(byDiscipline('playmaking'), ['pass_accuracy', 'ball_handle', 'speed_with_ball'], 0.6) },
+  { id: 'any-perimeter-d', aspects: ['Better perimeter D'], label: 'Any perimeter D', blurb: 'On-ball, steals or lane badges, whichever is cheaper.',
+    apply: anyOf(PERIMETER_D, ['perimeter_defense', 'steal'], 0.8) },
+  { id: 'any-rim-d', aspects: ['Better rim protection'], label: 'Any rim protection', blurb: 'Interior D or blocks, whichever is cheaper.',
+    apply: anyOf(RIM_D, ['interior_defense', 'block'], 0.8) },
+  { id: 'any-rebounding', aspects: ['Better rebounding'], label: 'Any rebounding', blurb: 'Offensive or defensive boards, whichever is cheaper.',
+    apply: anyOf(byDiscipline('rebounding'), ['offensive_rebound', 'defensive_rebound'], 0.8) },
+  { id: 'any-athletic', aspects: ['Faster', 'More athletic'], label: 'More athletic', blurb: 'Speed, agility, vertical or strength, whichever is cheaper.',
+    apply: anyOf(byDiscipline('physicals'), ['speed', 'agility', 'vertical', 'strength'], 0.7) },
+  { id: 'most-badges', label: 'Most badges', blurb: 'As many badge tiers as possible, any kind.',
+    apply: o => bump(o, goals.filter(g => g.discipline !== 'animation').map(g => g.name), 1.5) },
+];
+
+// Badge/attribute groups behind the "any of" directions, used to score focused trade-offs.
+export const FOCUS_GROUPS = {
+  'any-inside': { goals: [...byDiscipline('finishing'), ...animations.map(g => g.name)], attrs: ['close_shot', 'driving_layup', 'driving_dunk', 'standing_dunk', 'post_control'] },
+  'any-shooting': { goals: byDiscipline('shooting'), attrs: ['three_point', 'mid_range'] },
+  'any-playmaking': { goals: byDiscipline('playmaking'), attrs: ['pass_accuracy', 'ball_handle', 'speed_with_ball'] },
+  'any-perimeter-d': { goals: PERIMETER_D, attrs: ['perimeter_defense', 'steal'] },
+  'any-rim-d': { goals: RIM_D, attrs: ['interior_defense', 'block'] },
+  'any-rebounding': { goals: byDiscipline('rebounding'), attrs: ['offensive_rebound', 'defensive_rebound'] },
+  'any-athletic': { goals: byDiscipline('physicals'), attrs: ['speed', 'agility', 'vertical', 'strength'] },
+};

@@ -33,8 +33,7 @@ export default function BadgesView({ build, onFindWith }) {
     const plan = cheapestBadge(badges.find(b => b.badge === open), t, build.body);
     return [t, plan ? plan.ovr : null];
   })), [open, build.body]);
-  const totalTokens = d.unlocked.reduce((s, u) => s + tiers.slice(0, tiers.indexOf(u.tier) + 1)
-    .reduce((t, tier) => t + (tokenCost(u.badge.badge, tier, h) ?? 0), 0), 0);
+  const totalTokens = d.unlocked.reduce((s, u) => s + (tokenCost(u.badge.badge, u.tier, h) ?? 0), 0);
 
   return <div className="badges-view">
     <section className="card">
@@ -64,7 +63,7 @@ export default function BadgesView({ build, onFindWith }) {
             <div className="detail-grid">{tiers.map(t => <div key={t} className="detail-tier">
               <TierPill tier={t} />
               <p>{requirementText(b, t)}</p>
-              <small>Tokens: {tokenCost(b.badge, t, h) ?? '–'} (total {tiers.slice(0, tiers.indexOf(t) + 1).reduce((s, x) => s + (tokenCost(b.badge, x, h) ?? 0), 0)})</small>
+              <small>Tokens to equip: {tokenCost(b.badge, t, h) ?? '–'}</small>
               <small>{!eligible ? 'Not available at this height'
                 : cheapest?.[t] == null ? capReason(b, t, d.caps)
                 : `Uses at least ${Math.max(0, Math.round((cheapest[t] - floorOvr) / (99 - floorOvr) * 100))}% of the 99 OVR budget here`}</small>

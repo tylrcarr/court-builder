@@ -1,11 +1,12 @@
 import { assess, attributes, badges, badgeTier, capsFor, inHeight, ladder, resolveLinks, tiers } from './engine.js';
 import { buildName } from './build-name.js';
+import tokenTable from './badge-tokens.json' with { type: 'json' };
 import { MAX_SPECIALIZED, specUnlocked } from './breakpoints.js';
 
 export const zeros = () => attributes.map(() => 0);
 export const groups = [...new Set(attributes.map(a => a.discipline))];
 export const tierLabel = t => t === 'hall_of_fame' ? 'Hall of Fame' : t ? t[0].toUpperCase() + t.slice(1) : 'Locked';
-export const tierShort = t => ({ bronze: 'B', silver: 'S', gold: 'G', hall_of_fame: 'HoF' })[t] ?? '–';
+export const tierShort = t => ({ bronze: 'B', silver: 'S', gold: 'G', hall_of_fame: 'HoF', legend: 'Leg' })[t] ?? '–';
 
 // Everything the UI needs about a build, computed in one place.
 // Specialization always grants MAX_SPECIALIZED (2) breakers once unlocked, so builds carry no specialized count.
@@ -58,3 +59,35 @@ export function nearBadges(final, height, within = 6, caps = null) {
   }
   return out.sort((a, b) => a.total - b.total);
 }
+
+// 2K27 Synergy (official MyPLAYER builder page): 16 slots, 12 give +1 tier and 4 give +2, up to Legend. A Fuse badge
+// is boosted all game and costs no tokens; a Reaction badge gets the same boost once its Fuse has triggered enough
+// times in a game. synergy = { [badge name]: { boost: 1 | 2, reaction?: true } }. Boosts apply to unlocked badges only
+// (2K hasn't said whether a badge you don't qualify for can be fused).
+export const SYNERGY_SLOTS = { 1: 12, 2: 4 };
+export const LEGEND = 'legend';
+export const shownTiers = [...tiers, LEGEND];
+export function applySynergy(unlocked, synergy = {}) {
+  const rows = unlocked.map(u => {
+    const s = synergy[u.badge.name];
+    const boost = s?.boost ?? 0;
+    return { ...u, boost, reaction: !!s?.reaction, shown: shownTiers[Math.min(shownTiers.length - 1, tiers.indexOf(u.tier) + boost)] };
+  });
+  const used = { 1: 0, 2: 0 };
+  for (const r of rows) if (r.boost) used[r.boost]++;
+  const fuses = rows.filter(r => r.boost && !r.reaction).length, reactions = rows.filter(r => r.boost && r.reaction).length;
+  return { rows, used, fuses, reactions, legends: rows.filter(r => r.shown === LEGEND).length };
+}
+
+// Badge tokens each discipline gets: every attribute adds tokens to its own discipline by rating. Tokens are spent per
+// discipline, not from one pool. HQ's table covers 5'9"–6'9"; other heights use the nearest one (tokensEstimated).
+export function disciplineTokens(ratings, height) {
+  const hs = Object.keys(tokenTable.tokens).map(Number);
+  const h = Math.max(Math.min(...hs), Math.min(Math.max(...hs), height));
+  const rows = tokenTable.tokens[h];
+  const out = Object.fromEntries(groups.map(g => [g, 0]));
+  attributes.forEach((a, i) => { out[a.discipline] += parseInt(rows[i][Math.max(0, Math.min(74, ratings[i] - 25))], 36); });
+  return out;
+}
+const tokenHeights = Object.keys(tokenTable.tokens).map(Number);
+export const tokensEstimated = height => !tokenHeights.includes(height);

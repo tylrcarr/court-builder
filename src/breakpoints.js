@@ -52,11 +52,12 @@ export const defaultPrefs = () => ({
   values: { '*': 0 }, caps: {},
   continuous: [], continuousWeights: {}, minimums: {}, maximums: {},
 });
-// Attributes that matter beyond their breakpoints for a given build: a driving dunker needs handle and speed with
-// ball to get to the rim. Added to prefs.continuous unless listed in prefs.notFeel. (Rebounding stays
+// Attributes that matter beyond their breakpoints for a given build: a driving finisher (dunks or layups) needs handle
+// and speed with ball to get to the rim. Added to prefs.continuous unless listed in prefs.notFeel. (Rebounding stays
 // breakpoint-only: use minimums such as 87–95 defensive rebound instead.)
+export const drivesToRim = final => final[idx.driving_dunk] >= 80 || final[idx.driving_layup] >= 80;
 export function autoFeel(position, final) {
-  return final[idx.driving_dunk] >= 80 ? ['speed_with_ball', 'ball_handle', 'speed'] : [];
+  return drivesToRim(final) ? ['speed_with_ball', 'ball_handle', 'speed'] : [];
 }
 export function feelFor(prefs, position, final) {
   const off = new Set(prefs.notFeel ?? []);
@@ -73,8 +74,8 @@ const worthRank = (prefs, goal, rank) => Math.min(rank, capOf(prefs, goal));
 // Normal badge.
 export const CONTINUOUS_RATE = 0.1;
 export const CONTINUOUS_WEIGHTS = [[0.5, 'Low'], [1, 'Normal'], [2, 'High'], [3, 'Max']];
-// Feel terms for a set of final ratings: the user's list plus automatic dunker feel (handle, speed with ball)
-// once driving dunk reaches 80, so a dunking build can't leave itself unable to drive.
+// Feel terms for a set of final ratings: the user's list plus automatic driving feel (handle, speed with ball)
+// once driving dunk or driving layup reaches 80, so a driving finisher can't leave itself unable to drive.
 // Each term is [attribute, weight per point, target]: full weight up to the target, a quarter past it. Your own feel
 // attributes are linear (target 99); attribute meta (speed, agility… by position) fills in the ones you didn't set.
 function continuousTerms(opts, final = null) {
@@ -413,6 +414,14 @@ function optimizeOnce(body, opts) {
     if (val(again.filled.final) <= val(filled.final) + 1e-9) break;
     ({ filled, feelNow } = again); targets = lean;
   }
+  // The game only accepts a build filled to 99: spend any room left (feel attributes first, then anything your maximums
+  // allow) without lowering a single final rating — a base raise can change the archetype and shrink breaker gains.
+  {
+    const feelSet = new Set(feelNow.map(k => typeof k === 'number' ? k : idx[k]));
+    const weights = attributes.map((_, i) => feelSet.has(i) ? 1 : 0.2);
+    const topped = fill(filled, weights, ctx, [], filled.final, opts.maximums ?? 99);
+    if (topped.ovr > filled.ovr + 1e-9) filled = { ...filled, ...topped };
+  }
   // The requirements-only template: musts + minimums + specialization met by base ratings alone (no Cap Breakers), nothing
   // else spent. Falls back to the breaker plan when the requirements can't fit under 99 without breakers.
   const bare = cheapestPlan(floors, required, ctx, { general: 0, special: { category, count: 0 } });
@@ -478,36 +487,77 @@ function todayFinal(plan, ctx, count) {
  * "Drop this badge one tier to gain a lot": for each valued badge tier the plan holds, re-optimize the
  * body with every other held tier kept and that badge capped one tier lower, and report what it buys.
  */
-export function tradeOffs(plan, opts, { onProgress, limit = 8 } = {}) {
+export function tradeOffs(plan, opts, { onProgress, limit = 8, focus = null } = {}) {
+  // focus (optional): { opts, goals: [names], attrs: [names], label } — "what's the cheapest requirement to lower to get
+  // this?" Re-optimizes toward focus.opts, keeps every other held tier and the feel attributes, and ranks by what the
+  // focus gains instead of overall value.
   const h = plan.body.height;
   const held = heldTiers(plan.final, h, opts);
+  // Musts this build actually meets are requirements too (a must it doesn't meet would only block every re-plan).
+  const musts = {};
+  for (const [n, t] of Object.entries(opts.mustHave ?? {})) {
+    if (!t || !byName[n]) continue;
+    const have = tierRank(badgeTier(byName[n], plan.final, h)), want = tierRank(t);
+    if (have >= want) { musts[n] = t; held.set(n, Math.max(want, Math.min(held.get(n) ?? 0, have))); }
+  }
+  opts = { ...opts, mustHave: musts };
   const keepAll = Object.fromEntries([...held].map(([n, r]) => [n, tiers[r - 1]]));
   const baseline = optimizeBody(plan.body, { ...opts, mustHave: { ...opts.mustHave, ...keepAll } });
   const reference = baseline.error || baseline.value <= plan.value + 1e-9 ? plan : baseline;
+  const continuous = (opts.continuous ?? []).map(k => idx[k] ?? k);
+  const run = focus ? focus.opts : opts;
+  const feelFloors = focus ? run.minimums.map((m, i) => continuous.includes(i) ? Math.max(m, plan.final[i]) : m) : run.minimums;
+  const focusIdx = (focus?.attrs ?? []).map(k => idx[k]);
+  const focusScore = f => (focus?.goals ?? []).reduce((s, n) => s + 10 * tierRank(badgeTier(byName[n], f, h)), 0)
+    + focusIdx.reduce((s, i) => s + f[i], 0);
+  // With a focus, first re-aim the build with nothing lowered (points on things you don't care about move to the
+  // focus for free); each lowered requirement is then credited only with what it adds on top of that.
+  let start = reference, free = null;
+  if (focus) {
+    const aimed = optimizeBody(plan.body, { ...run, mustHave: { ...opts.mustHave, ...keepAll }, minimums: feelFloors });
+    if (!aimed.error && focusScore(aimed.final) > focusScore(reference.final)) { start = aimed; free = aimed; }
+  }
+  // Candidates: each held badge one tier lower; with a focus, also each attribute minimum removed.
+  const candidates = [...held].map(([name, rank]) => ({ kind: 'badge', name, rank }));
+  if (focus) (opts.minimums ?? []).forEach((m, i) => { if (m > 25 && !continuous.includes(i)) candidates.push({ kind: 'min', i, from: m }); });
   const results = [];
   let done = 0;
-  for (const [name, rank] of held) {
-    onProgress?.({ done: ++done, total: held.size, label: 'Pricing trade-offs' });
+  for (const c of candidates) {
+    onProgress?.({ done: ++done, total: candidates.length, label: focus ? `Pricing ${focus.label}` : 'Pricing trade-offs' });
     const mustHave = {};
-    for (const [n, r] of held) if (n !== name) mustHave[n] = tiers[r - 1];
-    if (rank > 1) mustHave[name] = tiers[rank - 2];
-    const alt = optimizeBody(plan.body, { ...opts, mustHave, exclude: { ...opts.exclude, [name]: rank - 1 } });
+    for (const [n, r] of held) if (c.kind !== 'badge' || n !== c.name) mustHave[n] = tiers[r - 1];
+    if (c.kind === 'badge' && c.rank > 1) mustHave[c.name] = tiers[c.rank - 2];
+    const minimums = c.kind === 'min' ? feelFloors.map((m, i) => i === c.i ? 25 : m) : feelFloors;
+    const exclude = c.kind === 'badge' ? { ...run.exclude, [c.name]: c.rank - 1 } : run.exclude;
+    const alt = optimizeBody(plan.body, { ...run, mustHave, minimums, exclude });
     if (alt.error) continue;
     const gained = [], lost = [];
+    const from = focus ? start : reference;
     for (const b of goals) {
-      if (valueOf(opts, b) <= 0) continue;
-      const a = tierRank(badgeTier(b, reference.final, h)), z = tierRank(badgeTier(b, alt.final, h));
+      if (valueOf(opts, b) <= 0 && !focus?.goals.includes(b.name)) continue;
+      const a = tierRank(badgeTier(b, from.final, h)), z = tierRank(badgeTier(b, alt.final, h));
       if (z > a) gained.push({ badge: b.name, from: tiers[a - 1] ?? null, to: tiers[z - 1] });
-      if (z < a && b.name !== name) lost.push({ badge: b.name, from: tiers[a - 1], to: tiers[z - 1] ?? null });
+      if (z < a && (c.kind !== 'badge' || b.name !== c.name)) lost.push({ badge: b.name, from: tiers[a - 1], to: tiers[z - 1] ?? null });
     }
-    const continuous = (opts.continuous ?? []).map(k => idx[k] ?? k);
     const physical = continuous.reduce((s, i) => s + alt.final[i] - reference.final[i], 0);
-    const net = alt.value - reference.value;
-    if (net > -0.25 && (gained.length || physical >= 3))
-      results.push({ drop: name, from: tiers[rank - 1], to: tiers[rank - 2] ?? null, gained, lost, net, physical, plan: alt });
+    const net = objective(alt.final, h, opts) - objective(reference.final, h, opts);
+    const drop = c.kind === 'badge' ? { drop: c.name, from: tiers[c.rank - 1], to: tiers[c.rank - 2] ?? null }
+      : { dropMin: attributes[c.i].name, from: c.from };
+    if (focus) {
+      const gain = focusScore(alt.final) - focusScore(start.final);
+      const attrGains = focusIdx.map(i => [attributes[i].name, alt.final[i] - start.final[i]]).filter(([, x]) => x > 0);
+      if (gain > 0 && !lost.length) results.push({ ...drop, gained, lost, net, physical, gain, attrGains, plan: alt });
+    } else if (net > -0.25 && (gained.length || physical >= 3)) results.push({ ...drop, gained, lost, net, physical, plan: alt });
   }
-  return { offers: results.sort((a, b) => b.net - a.net || b.physical - a.physical).slice(0, limit),
-    improved: reference !== plan ? reference : null };
+  const order = focus ? (a, b) => b.gain - a.gain || b.net - a.net : (a, b) => b.net - a.net || b.physical - a.physical;
+  let freeOffer = null;
+  if (free) {
+    const gained = goals.filter(b => focus.goals.includes(b.name)).map(b => [b, tierRank(badgeTier(b, reference.final, h)), tierRank(badgeTier(b, free.final, h))])
+      .filter(([, a, z]) => z > a).map(([b, a, z]) => ({ badge: b.name, from: tiers[a - 1] ?? null, to: tiers[z - 1] }));
+    freeOffer = { free: true, gained, lost: [], gain: focusScore(free.final) - focusScore(reference.final), plan: free,
+      attrGains: focusIdx.map(i => [attributes[i].name, free.final[i] - reference.final[i]]).filter(([, x]) => x > 0) };
+  }
+  return { offers: results.sort(order).slice(0, limit), improved: reference !== plan ? reference : null, free: freeOffer };
 }
 
 // ---------------------------------------------------------------- across bodies

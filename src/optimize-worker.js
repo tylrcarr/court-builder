@@ -20,7 +20,7 @@ self.onmessage = ({ data }) => {
       if (!result.results.length) result.blockers = blockers(options.positions, options.heights, options.opts, { onProgress });
       self.postMessage({ result });
     } else if (kind === 'tradeoffs') {
-      self.postMessage({ result: tradeOffs(options.plan, options.opts, { onProgress }) });
+      self.postMessage({ result: tradeOffs(options.plan, options.opts, { onProgress, focus: options.focus ?? null }) });
     }
   } catch (error) {
     self.postMessage({ error: error.message });

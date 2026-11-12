@@ -1,10 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { assess, attributes, badgeTier, defaultBody, empty, feet, lowerLinkedRatings, name, positions, resolveLinks, tiers } from '../engine.js';
 import { maximizeBadges, trimDeadWeight, unlockTier } from '../tune.js';
-import { BASE_CEILING, DEFAULT_CONTINUOUS, MAX_SPECIALIZED, SPECIALIZATIONS, autoFeel, byName, deadWeight, feelFor, goals, heldTiers, nextBreakpoint, objective, valueOf } from '../breakpoints.js';
+import { BASE_CEILING, DEFAULT_CONTINUOUS, MAX_SPECIALIZED, SPECIALIZATIONS, byName, deadWeight, feelFor, goals, heldTiers, nextBreakpoint, objective, valueOf } from '../breakpoints.js';
 import { META_OPTION, PlanCard, TemplateCard, optimizerOptions, pickOptions, useOptimize, usePool } from './LabView.jsx';
-import { VARIANTS as DIRECTIONS } from '../variants.js';
+import { BROAD_VARIANTS, FOCUS_GROUPS, VARIANTS as DIRECTIONS } from '../variants.js';
 import { capsFor } from '../engine.js';
+import { buildImage } from './buildImage.js';
+import BadgePreview from './BadgePreview.jsx';
 import { derive, groups, nearBadges, tierShort, zeros } from '../derive.js';
 import { Bar, NumberInput, Select, TierPill, disciplineColour, label, ratingTone, requirementText } from './common.jsx';
 import { shareUrl } from '../share.js';
@@ -15,7 +17,6 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
   const { body, base, breakers } = build;
   const d = useMemo(() => derive(build), [build]);
   const [locks, setLocks] = useState(() => attributes.map(() => false));
-  const [showBreakers, setShowBreakers] = useState(true);
   const [title, setTitle] = useState(build.title ?? '');
   useEffect(() => setTitle(build.title ?? ''), [build.savedId, build.title]);
   const saved = build.savedId && library.some(x => x.id === build.savedId);
@@ -25,6 +26,7 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
     setBuild({ title: t, savedId: id });
   };
   const [exportOpen, setExportOpen] = useState(false);
+  const [tab, setTab] = useState('badges');
   const row = positions[body.position].find(r => r.height === body.height);
   const range = (lo, hi, fmt) => Array.from({ length: hi - lo + 1 }, (_, i) => [lo + i, fmt(lo + i)]);
 
@@ -44,7 +46,6 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
     : { ...prefs, values: { ...prefs.values, '*': 1 }, continuous: prefs.continuous.length ? prefs.continuous : DEFAULT_CONTINUOUS }),
     position: body.position }), [prefs, body.position]);
   const feel = useMemo(() => feelFor(effective, body.position, d.final), [effective, body.position, d.final]);
-  const auto = useMemo(() => new Set(autoFeel(body.position, d.final)), [body.position, d.final]);
   const buildPrefs = useMemo(() => ({ ...effective, continuous: feel }), [effective, feel]);
   const dw = useMemo(() => deadWeight(d.final, body.height, buildPrefs, build.category, d.ratings), [d, buildPrefs, build.category]);
   const nexts = useMemo(() => attributes.map((_, i) => nextBreakpoint(i, d.final, body.height, effective, build.category,
@@ -60,12 +61,19 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
   // Attributes carrying Cap Breakers are deliberate investments, so they never count as dead.
   const slack = useMemo(() => dw.slack.map((x, i) => d.applied[i] > 0 ? 0 : Math.max(0, Math.min(x, d.final[i] - d.linkedFloors[i]))), [dw, d]);
   const deadPoints = slack.reduce((s, x) => s + x, 0);
-  const isFeel = i => feel.includes(attributes[i].name);
-  const toggleFeel = i => {
-    const key = attributes[i].name;
-    setPrefs(p => isFeel(i)
-      ? { ...p, continuous: p.continuous.filter(k => k !== key), notFeel: auto.has(key) ? [...new Set([...(p.notFeel ?? []), key])] : p.notFeel }
-      : { ...p, continuous: [...p.continuous, key], notFeel: (p.notFeel ?? []).filter(k => k !== key) });
+  // What each final rating is holding up: the unlocked badge tiers that need it, e.g. Vertical 80 → "Posterizer Gold (80)".
+  const holds = useMemo(() => attributes.map((_, i) => d.unlocked.flatMap(u => (u.badge.tiers.find(t => t.tier === u.tier)?.requirements ?? [])
+    .filter(r => r.attribute === i && d.final[i] >= r.minimum).map(r => ({ text: `${label(u.badge.name)} ${label(u.tier)}`, at: r.minimum }))))
+    .map(list => list.sort((a, b) => b.at - a.at)), [d]);
+  const ratingTip = i => {
+    const lines = [`${name(attributes[i].name)} ${d.final[i]}${d.final[i] > d.ratings[i] ? ` (${d.ratings[i]} + ${d.final[i] - d.ratings[i]} from Cap Breakers)` : ''}, body cap ${d.caps[i]}`];
+    lines.push(holds[i].length ? 'Needed for: ' + holds[i].map(h => `${h.text} (${h.at})`).join(', ') : 'No badge needs this rating.');
+    if (d.linkedFloors[i] > 25) lines.push(`Linked minimum ${d.linkedFloors[i]} from other attributes.`);
+    if (plusCost[i] != null) lines.push(`+1 base costs ${plusCost[i].toFixed(2)} OVR.`);
+    const n = nexts[i];
+    if (n && n.rating <= d.caps[i]) lines.push(`Next at ${n.rating}: ` + n.unlocks.map(u => u.specialization ? `${name(u.specialization)} specialization`
+      : `${label(u.badge.name)} ${label(u.tier)}${u.alone ? '' : ' (with other ratings)'}`).join(', '));
+    return lines.join('\n');
   };
   const spec = SPECIALIZATIONS[build.category];
 
@@ -131,163 +139,192 @@ export default function BuilderView({ build, setBuild, onSave, notify, library, 
     `Badges (${d.unlocked.length}): ` + d.unlocked.map(u => `${label(u.badge.name)} ${label(u.tier)}`).join(', '),
   ].join('\n');
 
+  const attrRow = ({ index: i, name: key }, g) => <div key={key}
+    className={'attr-row' + (locks[i] ? ' locked' : '')}>
+    <div className="attr-name">
+      <button className={'lock' + (locks[i] ? ' on' : '')} aria-pressed={locks[i]} title={locks[i] ? 'Unlock' : 'Lock: trim, Get it and Maximize won’t change this'}
+        onClick={() => setLocks(choose(locks, i, !locks[i]))}>{locks[i] ? '🔒' : '🔓'}</button>
+      <span title={name(key)}>{name(key)}</span>
+      {d.linkedFloors[i] > 25 && d.ratings[i] <= d.linkedFloors[i] && <small title="Held up by a linked minimum from other attributes">min {d.linkedFloors[i]}</small>}
+    </div>
+    <div className="attr-control">
+      <button className="step" aria-label={`Decrease ${name(key)}`} disabled={d.ratings[i] <= 25} onClick={() => setRating(i, d.ratings[i] - 1)}>−</button>
+      <input type="range" aria-label={`${name(key)} slider`} min={25} max={d.caps[i]} value={d.ratings[i]} disabled={d.caps[i] === 25}
+        style={{ '--fill': (d.ratings[i] - 25) / Math.max(1, d.caps[i] - 25) * 100 + '%', '--accent': disciplineColour(g) }}
+        onChange={e => setRating(i, Number(e.target.value))} />
+      <button className="step" aria-label={`Increase ${name(key)}`} disabled={!canIncrease[i]} onClick={() => setRating(i, d.ratings[i] + 1)}
+        title={plusCost[i] != null ? `+1 costs ${plusCost[i].toFixed(2)} OVR` : 'At cap'}>+</button>
+      <NumberInput title={`${name(key)} rating`} value={d.ratings[i]} max={d.caps[i]} onChange={v => setRating(i, v)} />
+    </div>
+    <div className="attr-final" title={ratingTip(i)}>
+      <strong className={ratingTone(d.final[i]) + (d.final[i] > d.ratings[i] ? ' boosted' : '')}>{d.final[i]}</strong>
+      <small title="Body cap">/{d.caps[i]}</small>
+      {slack[i] > 0 && <small className="dead" title={`${slack[i]} point${slack[i] > 1 ? 's' : ''} above the last breakpoint you care about (${Math.max(dw.floors[i], d.linkedFloors[i])})`
+        + (!nexts[i] || nexts[i].rating > d.caps[i] ? ` — and no valued breakpoint is reachable under this body's cap of ${d.caps[i]}.` : '')}>+{slack[i]}</small>}
+    </div>
+  </div>;
+  const column = list => list.map(g => <div key={g} className="attr-group">
+    <h3 style={{ '--accent': disciplineColour(g) }}>{name(g)}</h3>
+    {attributes.filter(a => a.discipline === g).map(a => attrRow(a, g))}
+  </div>);
+  // Cap Breakers on their own, like the in-game screen: each attribute's base → final against its cap and the ladder.
+  const breakerRow = ({ index: i, name: key }) => <div key={key} className={'cb-row' + (d.applied[i] ? ' used' : '')}>
+    <span className="cb-name">{name(key)}</span>
+    <span className="cb-val">{d.applied[i] ? <>{d.ratings[i]}<i>→</i></> : null}<b className={ratingTone(d.final[i])}>{d.final[i]}</b><small>/{d.caps[i]}</small></span>
+    <div className="breakers" role="group" aria-label={`${name(key)} Cap Breakers`}>
+      {d.ladders[i].map((gain, step) => <button key={step} disabled={!gain}
+        className={step < d.applied[i] ? 'on' : ''} aria-pressed={step < d.applied[i]}
+        title={gain ? `Breaker ${step + 1}: +${gain}` : 'No gain left'}
+        onClick={() => setBuild({ breakers: choose(breakers, i, d.applied[i] === step + 1 ? 0 : step + 1) })}>
+        {gain ? '+' + gain : '·'}</button>)}
+    </div>
+  </div>;
+  const copyLink = async () => { const url = shareUrl({ ...build, title }); try { await navigator.clipboard.writeText(url); notify('Share link copied.'); } catch { prompt('Copy this link', url); } };
+  const screenshot = async () => {
+    const blob = await buildImage({ build, d, title: title.trim(), overall: shownOverall });
+    const file = `${(title.trim() || d.finalName || 'build').replace(/[^\w -]+/g, '').trim() || 'build'}.png`;
+    const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: file });
+    a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    try { await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]); notify(`Saved ${file} and copied the image.`); }
+    catch { notify(`Saved ${file}.`); }
+  };
+
   return <div className="builder">
-    <section className="card body-card">
-      <div className="body-fields">
-        <Select title="Position" value={body.position} options={Object.keys(positions).map(p => [p, p])} onChange={changePosition} />
-        <Select stepper title="Height" value={body.height} options={positions[body.position].map(r => [r.height, feet(r.height)])}
-          onChange={h => changeHeight(Number(h))} />
-        <Select stepper title="Weight" value={body.weight} options={range(row.minWeight, row.maxWeight, v => v + ' lb')}
-          onChange={w => updateBody({ ...body, weight: Number(w) })} />
-        <Select stepper title="Wingspan" value={body.wingspan} options={range(row.minWingspan, row.maxWingspan, feet)}
-          onChange={w => updateBody({ ...body, wingspan: Number(w) })} />
+    <section className="card build-head">
+      <div className="head-row">
+        <div className="body-fields">
+          <Select compact title="Position" value={body.position} options={Object.keys(positions).map(p => [p, p])} onChange={changePosition} />
+          <Select compact stepper title="Height" value={body.height} options={positions[body.position].map(r => [r.height, feet(r.height)])}
+            onChange={h => changeHeight(Number(h))} />
+          <Select compact stepper title="Weight" value={body.weight} options={range(row.minWeight, row.maxWeight, v => v + ' lb')}
+            onChange={w => updateBody({ ...body, weight: Number(w) })} />
+          <Select compact stepper title="Wingspan" value={body.wingspan} options={range(row.minWingspan, row.maxWingspan, feet)}
+            onChange={w => updateBody({ ...body, wingspan: Number(w) })} />
+          <label className="field compact narrow"><span>Breakers</span><NumberInput title="General breakers" value={build.budget} min={0} max={105}
+            onChange={v => setBuild({ budget: v })} /></label>
+          <Select compact title="Specialization" value={build.category}
+            options={[['', 'None'], ...groups.map(g => [g, name(g)])]} onChange={v => setBuild({ category: v, specialCount: v ? MAX_SPECIALIZED : 0 })} />
+        </div>
+        <div className="head-name">
+          <span className="eyebrow">{d.breakerCount ? 'Name after Cap Breakers' : 'Build name'}</span>
+          <h2>{d.finalName ?? 'Unnamed build'}</h2>
+          <div className="name-stats"><span><b>{d.unlocked.length}</b> badges</span><span><b>{d.badgePoints}</b> tier pts</span>
+            <span className={d.overBudget ? 'warn' : ''}><b>{d.generalUsed}/{build.budget}</b> breakers</span>
+            {d.breakerCount > 0 && d.name !== d.finalName && <span className="muted">base: {d.name}</span>}</div>
+        </div>
+        <div className="ovr-block" aria-label={`${shownOverall} Overall`}>
+          <span>OVR</span><strong className={shownOverall >= 99 ? 'full' : ''}>{shownOverall}</strong>
+          <div className="ovr-meter"><i style={{ width: (Math.min(99, d.state.score) - 25) / 74 * 100 + '%' }} /></div>
+          <small>{room ? `${(99 - d.state.score).toFixed(1)} OVR left to spend` : 'Filled to 99'}</small>
+        </div>
       </div>
-      <div className="ovr-block" aria-label={`${shownOverall} Overall`}>
-        <span>OVR</span><strong className={shownOverall >= 99 ? 'full' : ''}>{shownOverall}</strong>
-        <div className="ovr-meter"><i style={{ width: (Math.min(99, d.state.score) - 25) / 74 * 100 + '%' }} /></div>
-        <small>{room ? `${(99 - d.state.score).toFixed(1)} OVR left to spend` : 'Filled to 99'}</small>
+      {(d.overBudget || (build.category && !d.specOk)) && <p className="warn small head-warn">
+        {d.overBudget && 'Using more general breakers than your pool. '}
+        {build.category && !d.specOk && `${name(build.category)} specialization is locked: needs ${Object.entries(spec?.minimums ?? {})
+          .map(([k, v]) => `${name(k)} ${v}`).join(' and ')} base. Specialized breakers count as general until then.`}</p>}
+      <div className="toolbar">
+        <input type="text" placeholder="Build title" value={title} maxLength={80} onChange={e => setTitle(e.target.value)} />
+        <button className="primary" onClick={() => saveAs(saved ? build.savedId : null)}>{saved ? 'Save changes' : 'Save'}</button>
+        {saved && <button onClick={() => saveAs(null)}>Save as new</button>}
+        <button onClick={screenshot} title="Download (and copy) a picture of the whole build">📷 Screenshot</button>
+        <button onClick={copyLink}>Copy link</button>
+        <button aria-expanded={exportOpen} onClick={() => setExportOpen(!exportOpen)}>Text</button>
+        <button onClick={() => onSendToLab(build)} title="Keep this build's badges as must-haves and search nearby bodies">Send to Lab</button>
+        <span className="spacer" />
+        <button onClick={undo} disabled={!undo} title="Undo (Ctrl+Z)">↶</button>
+        <button onClick={redo} disabled={!redo} title="Redo (Ctrl+Y)">↷</button>
+        <button onClick={() => { setBuild({ base: empty(), breakers: zeros() }); notify('Build reset to 25s. Ctrl+Z to undo.'); }}>Reset</button>
       </div>
+      {exportOpen && <textarea readOnly rows={8} value={exportText} onFocus={e => e.target.select()} />}
     </section>
 
     <div className="builder-grid">
+      <div className="builder-main">
       <section className="card attributes-card">
-        <div className="card-head">
-          <div><h2>Attributes</h2><p className="muted">Linked ratings move together. <b className="dead-text">+n</b> = points above the last breakpoint you
-          care about; <b>→n</b> = next breakpoint. ↑ marks a feel attribute (worth raising on its own).</p></div>
-          <div className="actions">
-            <button onClick={undo} disabled={!undo} title="Undo (Ctrl+Z)">↶</button>
-            <button onClick={redo} disabled={!redo} title="Redo (Ctrl+Y)">↷</button>
-            <button aria-pressed={showBreakers} onClick={() => setShowBreakers(!showBreakers)}>{showBreakers ? 'Hide' : 'Show'} breakers</button>
-            <button onClick={() => { setBuild({ base: empty(), breakers: zeros() }); notify('Build reset to 25s.'); }}>Reset</button>
-          </div>
+        <p className="muted small legend">Hover a rating to see which badges need it and what's next · <b className="dead-text">+n</b> points above
+          your last breakpoint · 🔓 lock a rating so Trim, Get it and Maximize leave it alone</p>
+        <div className="attr-columns">
+          <div>{column(['finishing', 'shooting', 'playmaking'])}</div>
+          <div>{column(groups.filter(g => !['finishing', 'shooting', 'playmaking'].includes(g)))}</div>
         </div>
-        {groups.map(g => <div key={g} className="attr-group">
-          <h3 style={{ '--accent': disciplineColour(g) }}>{name(g)}</h3>
-          {attributes.filter(a => a.discipline === g).map(({ index: i, name: key }) => <div key={key}
-            className={'attr-row' + (showBreakers ? ' with-breakers' : '') + (locks[i] ? ' locked' : '')}>
-            <div className="attr-name">
-              <button className={'lock' + (locks[i] ? ' on' : '')} aria-pressed={locks[i]} title={locks[i] ? 'Unlock' : 'Lock: trim and Get it won’t change this'}
-                onClick={() => setLocks(choose(locks, i, !locks[i]))}>{locks[i] ? '🔒' : '🔓'}</button>
-              <button className={'feel' + (isFeel(i) ? ' on' : '')} aria-pressed={isFeel(i)}
-                title={(isFeel(i) ? 'Feel attribute: worth raising past breakpoints' + (auto.has(key) && !prefs.continuous.includes(key)
-                  ? ' (automatic: you have a driving dunk)' : '')
-                  + '. Click to treat as breakpoint-only.' : 'Mark as a feel attribute')}
-                onClick={() => toggleFeel(i)}>↑</button>
-              <span>{name(key)}</span>
-              {d.linkedFloors[i] > 25 && <small title="Linked minimum from other attributes">min {d.linkedFloors[i]}</small>}
-            </div>
-            <div className="attr-control">
-              <button className="step" aria-label={`Decrease ${name(key)}`} disabled={d.ratings[i] <= 25} onClick={() => setRating(i, d.ratings[i] - 1)}>−</button>
-              <input type="range" aria-label={`${name(key)} slider`} min={25} max={d.caps[i]} value={d.ratings[i]} disabled={d.caps[i] === 25}
-                style={{ '--fill': (d.ratings[i] - 25) / Math.max(1, d.caps[i] - 25) * 100 + '%', '--accent': disciplineColour(g) }}
-                onChange={e => setRating(i, Number(e.target.value))} />
-              <button className="step" aria-label={`Increase ${name(key)}`} disabled={!canIncrease[i]} onClick={() => setRating(i, d.ratings[i] + 1)}
-                title={plusCost[i] != null ? `+1 costs ${plusCost[i].toFixed(2)} OVR` : 'At cap'}>+</button>
-              <NumberInput title={`${name(key)} rating`} value={d.ratings[i]} max={d.caps[i]} onChange={v => setRating(i, v)} />
-            </div>
-            {showBreakers && <div className="breakers" role="group" aria-label={`${name(key)} Cap Breakers`}>
-              {d.ladders[i].map((gain, step) => <button key={step} disabled={!gain}
-                className={step < d.applied[i] ? 'on' : ''} aria-pressed={step < d.applied[i]}
-                title={gain ? `Breaker ${step + 1}: +${gain}` : 'No gain left'}
-                onClick={() => setBuild({ breakers: choose(breakers, i, d.applied[i] === step + 1 ? 0 : step + 1) })}>
-                {gain ? '+' + gain : '·'}</button>)}
-            </div>}
-            <div className="attr-final">
-              <strong className={ratingTone(d.final[i]) + (d.final[i] > d.ratings[i] ? ' boosted' : '')}>{d.final[i]}</strong>
-              <small title="Body cap">/{d.caps[i]}</small>
-              {slack[i] > 0 && <small className="dead" title={`${slack[i]} point${slack[i] > 1 ? 's' : ''} above the last breakpoint you care about (${Math.max(dw.floors[i], d.linkedFloors[i])})`
-                + (!nexts[i] || nexts[i].rating > d.caps[i] ? ` — and no valued breakpoint is reachable under this body's cap of ${d.caps[i]}. Mark it ↑ if it matters for feel.` : '')}>+{slack[i]}</small>}
-              {nexts[i] && nexts[i].rating <= d.caps[i] && <small className="next" title={'At ' + nexts[i].rating + ': ' + nexts[i].unlocks.map(u => u.specialization
-                ? `${name(u.specialization)} specialization` : `${label(u.badge.name)} ${label(u.tier)}${u.alone ? '' : ' (with other ratings)'}`).join(', ')}>→{nexts[i].rating}</small>}
-            </div>
-          </div>)}
-        </div>)}
       </section>
 
+      <section className="card cap-breakers">
+        <div className="row-head"><h3>Cap Breakers</h3>
+          <div className="bp-stats">
+            <span className={d.overBudget ? 'warn' : ''}>General <b>{d.generalUsed}/{build.budget}</b></span>
+            {build.category && <span className={d.specOk ? '' : 'warn'}>{name(build.category)} <b>{d.specialUsed}/{MAX_SPECIALIZED}</b>{!d.specOk && ' (locked)'}</span>}
+            {d.breakerCount > 0 && <button className="mini-btn" onClick={() => setBuild({ breakers: zeros() })}>Clear</button>}
+          </div></div>
+        <div className="cb-grid">{groups.map(g => <div key={g} className="cb-group">
+          <h4 style={{ '--accent': disciplineColour(g) }}>{name(g)}</h4>
+          {attributes.filter(a => a.discipline === g).map(breakerRow)}
+        </div>)}</div>
+      </section>
+
+      <BadgePreview build={build} d={d} setBuild={setBuild} />
+      </div>
+
       <aside className="side">
-        <section className="card name-card">
-          <span className="eyebrow">{d.breakerCount ? 'Name after Cap Breakers' : 'Build name'}</span>
-          <h2>{d.finalName ?? 'Unnamed build'}</h2>
-          {d.breakerCount > 0 && d.name !== d.finalName && <small className="muted">Base: {d.name}</small>}
-          <div className="name-stats"><span><b>{d.unlocked.length}</b> badges</span><span><b>{d.badgePoints}</b> tier pts</span>
-            <span className={d.overBudget ? 'warn' : ''}><b>{d.generalUsed}/{build.budget}</b> breakers</span></div>
-        </section>
-        <section className="card">
-          <h3>Cap Breaker pool</h3>
-          <div className="pool">
-            <label className="field compact"><span>General</span><NumberInput title="General breakers" value={build.budget} min={0} max={105}
-              onChange={v => setBuild({ budget: v })} /></label>
-            <Select compact title="Specialization" value={build.category}
-              options={[['', 'None'], ...groups.map(g => [g, name(g)])]} onChange={v => setBuild({ category: v, specialCount: v ? MAX_SPECIALIZED : 0 })} />
-          </div>
-          {d.overBudget && <p className="warn small">Using more general breakers than your pool.</p>}
-          {build.category && !d.specOk && <p className="warn small">{name(build.category)} specialization is locked: needs {Object.entries(spec?.minimums ?? {})
-            .map(([k, v]) => `${name(k)} ${v}`).join(' and ')} base. Specialized breakers count as general until then.</p>}
-        </section>
-        <section className="card">
-          <div className="row-head"><h3>Breakpoints</h3>
-            <button className="mini-btn" onClick={trim} disabled={!deadPoints} title="Lower ratings to their last breakpoint and reinvest in feel attributes">Trim dead points</button></div>
-          {deadPoints ? <p className="small"><b className="dead-text">{deadPoints}</b> rating points sit above the last breakpoint you care about:{' '}
-            {attributes.map((a, i) => slack[i] ? `${name(a.name)} +${slack[i]}` : null).filter(Boolean).join(', ')}.</p>
-            : <p className="muted small">Every non-feel rating sits on a breakpoint.</p>}
-          {highBase.length > 0 && <p className="small warn">Base above 94: {highBase.map(h => `${name(attributes[h.i].name)} ${h.rating} (94 frees ${h.saves.toFixed(1)} OVR)`)
-            .join(', ')}. Cap Breakers are the cheaper way up there.</p>}
-          <button className="optimize" onClick={() => onSendToLab(build)}>Send to Build Lab →</button>
-        </section>
-        <TradeOffs build={build} d={d} prefs={buildPrefs} setBuild={setBuild} notify={notify} />
-        <Alternatives build={build} d={d} prefs={buildPrefs} setBuild={setBuild} notify={notify} />
-        <Recommender build={build} prefs={prefs} labCfg={labCfg} setBuild={setBuild} onSave={onSave} notify={notify} />
-        <section className="card">
-          <div className="row-head"><h3>Badges unlocked <span className="count">{d.unlocked.length}</span></h3>
-            <button className="mini-btn" onClick={maxBadges} title="Trade budget for more badge tiers without losing any">Maximize</button></div>
-          <div className="unlocked">{tiers.slice().reverse().map(t => {
-            const list = d.unlocked.filter(u => u.tier === t);
-            return list.length ? <div key={t} className="tier-group"><TierPill tier={t} />
-              {list.map(u => <span key={u.badge.badge} className="chip" title={requirementText(u.badge, u.tier)}>{label(u.badge.name)}</span>)}</div> : null;
-          })}{!d.unlocked.length && <p className="muted">Raise ratings to unlock badges.</p>}</div>
-        </section>
-        {near.length > 0 && <section className="card">
-          <h3>Within reach</h3>
-          <ul className="near">{near.map(n => <li key={n.badge.badge}>
-            <span>{label(n.badge.name)} <TierPill tier={n.tier} small />
-              <button className="mini-btn" onClick={() => getBadge(n)} title="Raise the needed attributes">Get it</button></span>
-            <small>{n.gaps.map(g => `${name(g.name)} +${g.gap}`).join(', ')}</small></li>)}</ul>
-        </section>}
-        <section className="card">
-          <h3>Save & share</h3>
-          <input type="text" placeholder="Build title (optional)" value={title} maxLength={80} onChange={e => setTitle(e.target.value)} />
-          <div className="actions wrap">
-            <button className="primary" onClick={() => saveAs(saved ? build.savedId : null)}>{saved ? 'Save changes' : 'Save build'}</button>
-            {saved && <button onClick={() => saveAs(null)}>Save as new</button>}
-            <button onClick={async () => { const url = shareUrl({ ...build, title }); try { await navigator.clipboard.writeText(url); notify('Share link copied.'); } catch { prompt('Copy this link', url); } }}>Copy share link</button>
-            <button aria-expanded={exportOpen} onClick={() => setExportOpen(!exportOpen)}>Export text</button>
-          </div>
-          {exportOpen && <textarea readOnly rows={9} value={exportText} onFocus={e => e.target.select()} />}
-          <p className="muted small">{library.length} saved build{library.length === 1 ? '' : 's'}.</p>
-        </section>
+        <div className="toggles side-tabs" role="tablist">{[['badges', 'Badges'], ['improve', 'Improve'], ['alts', 'Alternatives']].map(([id, text]) =>
+          <button key={id} role="tab" className={tab === id ? 'on' : ''} aria-selected={tab === id} onClick={() => setTab(id)}>{text}</button>)}</div>
+        {tab === 'badges' && <>
+          <section className="card">
+            <div className="row-head"><h3>More badges</h3>
+              <button className="mini-btn" onClick={maxBadges} title="Trade budget for more badge tiers without losing any">Maximize</button></div>
+            <p className="muted small">Maximize trades budget for extra badge tiers without losing any. Or pick one below.</p>
+          </section>
+          {near.length > 0 && <section className="card">
+            <h3>Within reach</h3>
+            <ul className="near">{near.map(n => <li key={n.badge.badge}>
+              <span>{label(n.badge.name)} <TierPill tier={n.tier} small />
+                <button className="mini-btn" onClick={() => getBadge(n)} title="Raise the needed attributes, trading budget if needed">Get it</button></span>
+              <small>{n.gaps.map(g => `${name(g.name)} +${g.gap}`).join(', ')}</small></li>)}</ul>
+          </section>}
+        </>}
+        {tab === 'improve' && <>
+          <section className="card">
+            <div className="row-head"><h3>Breakpoints</h3>
+              <button className="mini-btn" onClick={trim} disabled={!deadPoints} title="Lower ratings to their last breakpoint and reinvest in feel attributes">Trim dead points</button></div>
+            {deadPoints ? <p className="small"><b className="dead-text">{deadPoints}</b> rating points sit above the last breakpoint you care about:{' '}
+              {attributes.map((a, i) => slack[i] ? `${name(a.name)} +${slack[i]}` : null).filter(Boolean).join(', ')}.</p>
+              : <p className="muted small">Every non-feel rating sits on a breakpoint.</p>}
+            {highBase.length > 0 && <p className="small warn">Base above 94: {highBase.map(h => `${name(attributes[h.i].name)} ${h.rating} (94 frees ${h.saves.toFixed(1)} OVR)`)
+              .join(', ')}. Cap Breakers are the cheaper way up there.</p>}
+          </section>
+          <TradeOffs build={build} d={d} prefs={buildPrefs} mustHave={labCfg?.mustHave ?? {}} setBuild={setBuild} notify={notify} />
+        </>}
+        {tab === 'alts' && <>
+          <Recommender build={build} prefs={prefs} labCfg={labCfg} setBuild={setBuild} onSave={onSave} notify={notify} />
+          <Alternatives build={build} d={d} prefs={buildPrefs} setBuild={setBuild} notify={notify} />
+        </>}
       </aside>
     </div>
   </div>;
 }
 
 // "What if I drop a badge a tier?" for the build on screen: re-optimizes this body with every other valued tier kept.
-function TradeOffs({ build, d, prefs, setBuild, notify }) {
+function TradeOffs({ build, d, prefs, mustHave, setBuild, notify }) {
   const [state, run, cancel] = useOptimize();
-  const key = JSON.stringify([build.body, build.base, build.breakers, build.budget, build.category, prefs]);
+  const key = JSON.stringify([build.body, build.base, build.breakers, build.budget, build.category, prefs, mustHave]);
   const [ranFor, setRanFor] = useState(null);
-  const stale = ranFor !== key;
+  const [focusId, setFocusId] = useState('');
+  const stale = ranFor !== key + focusId;
   const goalName = n => byName[n]?.label ?? label(n);
   const tierText = (g, t) => byName[g]?.tiers.length > 1 ? (t ? tierShort(t) : 'none') : (t ? '✓' : 'none');
   function price() {
-    const opts = optimizerOptions(prefs, { breakers: { general: build.budget, future: 0, special: { category: build.category } }, mustHave: {} });
+    const opts = optimizerOptions(prefs, { breakers: { general: build.budget, future: 0, special: { category: build.category } }, mustHave });
     const plan = { body: build.body, manual: build.base, base: d.ratings, breakers: d.applied, final: d.final,
       value: objective(d.final, build.body.height, opts), category: build.category };
-    setRanFor(key);
-    run('tradeoffs', { plan, opts });
+    setRanFor(key + focusId);
+    const v = BROAD_VARIANTS.find(x => x.id === focusId);
+    const focus = v ? { opts: v.apply(opts), goals: FOCUS_GROUPS[v.id].goals, attrs: FOCUS_GROUPS[v.id].attrs, label: v.label.toLowerCase() } : null;
+    run('tradeoffs', { plan, opts, focus });
   }
   const apply = (p, what) => { setBuild({ base: p.manual, breakers: p.breakers }); notify(`${what}. Ctrl+Z to undo.`); };
   // "Give up Elite contact dunks (keep Pro)", "Give up Dimer HoF → Gold", "Give up Pogo Stick".
   const giveUp = o => {
+    if (o.dropMin) return <>Remove the <b>{name(o.dropMin)}</b> minimum ({o.from})</>;
     const keepsPro = o.drop === 'elite_contact_off_two' && !o.lost.some(g => g.badge === 'pro_contact_off_two');
     const multi = byName[o.drop]?.tiers.length > 1;
     return <>Give up <b>{goalName(o.drop)}</b>{multi && <> {tierShort(o.from)}{o.to ? ` → ${tierShort(o.to)}` : ' entirely'}</>}
@@ -298,21 +335,33 @@ function TradeOffs({ build, d, prefs, setBuild, notify }) {
     <div className="row-head"><h3>Trade-offs</h3>
       {state.running ? <button className="mini-btn" onClick={cancel}>Cancel</button>
         : <button className="mini-btn" onClick={price}>{r ? 'Re-check' : 'Find trade-offs'}</button>}</div>
-    {!r && !state.running && <p className="muted small">What would dropping one badge a tier buy on this body? Uses your Lab importance settings.</p>}
+    <div className="focus-pick"><Select compact title="Looking for" value={focusId}
+      options={[['', 'Best overall value'], ...BROAD_VARIANTS.filter(v => FOCUS_GROUPS[v.id]).map(v => [v.id, v.label])]}
+      onChange={setFocusId} /></div>
+    {!r && !state.running && <p className="muted small">{focusId
+      ? 'Which single requirement (a badge one tier lower, or a minimum) is the cheapest to lower to get this? Keeps every other badge and your feel attributes.'
+      : 'What would dropping one badge a tier buy on this body? Uses your Lab importance settings.'}</p>}
     {state.running && <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
       {state.progress && ` ${state.progress.done}/${state.progress.total}`}</p>}
     {r && <>
       {r.improved && <p className="small">Same badges, better arrangement on this body (+{(r.improved.value - objective(d.final, build.body.height,
         optimizerOptions(prefs, { breakers: { special: { category: build.category } }, mustHave: {} }))).toFixed(1)}).{' '}
         <button className="mini-btn" onClick={() => apply(r.improved, 'Rearranged with the same badges')}>Apply</button></p>}
-      {!r.offers.length && <p className="muted small">No one-tier drop buys anything worth more here.</p>}
-      <ul className="offers">{r.offers.map(o => <li key={o.drop}>
+      {!r.offers.length && <p className="muted small">{focusId ? 'Lowering any single requirement doesn’t buy any of that here.' : 'No one-tier drop buys anything worth more here.'}</p>}
+      {r.free && <ul className="offers"><li>
+        <span><b>Without lowering anything</b> <span className="muted small">(moves points off things you don’t care about)</span></span>
+        <small>{[...r.free.gained.map(g => `+${goalName(g.badge)} ${tierText(g.badge, g.to)}`), ...r.free.attrGains.map(([k, x]) => `${name(k)} +${x}`)].join(' · ')}</small>
+        <button className="mini-btn" onClick={() => apply(r.free.plan, 'Re-aimed toward ' + (BROAD_VARIANTS.find(v => v.id === focusId)?.label.toLowerCase() ?? 'that'))}>Apply</button>
+      </li></ul>}
+      {r.free && r.offers.length > 0 && <p className="muted small">Then, on top of that:</p>}
+      <ul className="offers">{r.offers.map(o => <li key={o.drop ?? o.dropMin}>
         <span>{giveUp(o)}</span>
         <small>{[...o.gained.map(g => `+${goalName(g.badge)} ${tierText(g.badge, g.to)}`),
+          ...(o.attrGains ?? []).map(([k, x]) => `${name(k)} +${x}`),
           ...o.lost.map(g => `−${goalName(g.badge)} ${tierText(g.badge, g.to)}`),
           o.physical ? `feel ${o.physical > 0 ? '+' : ''}${o.physical}` : ''].filter(Boolean).join(' · ')}{' '}
           <b className={o.net > 0 ? 'good-text' : 'muted'}>{o.net > 0 ? '+' : ''}{o.net.toFixed(1)}</b></small>
-        <button className="mini-btn" onClick={() => apply(o.plan, `Dropped ${goalName(o.drop)} a tier`)}>Apply</button>
+        <button className="mini-btn" onClick={() => apply(o.plan, o.dropMin ? `Removed the ${name(o.dropMin)} minimum` : `Dropped ${goalName(o.drop)} a tier`)}>Apply</button>
       </li>)}</ul>
     </>}
   </section>;

@@ -34,6 +34,7 @@ function validBuild(b) {
 const blank = () => ({ body: defaultBody(), base: empty(), breakers: zeros(), budget: 8, category: '', specialCount: 0 });
 const fromResult = r => ({ body: r.body, base: r.manual ?? r.base, breakers: r.breakers ?? zeros(),
   budget: r.budget ?? r.generalUsed ?? 8, category: r.category ?? '', specialCount: (r.category ?? '') ? MAX_SPECIALIZED : 0, title: r.title,
+  synergy: r.synergy ?? {},
   savedId: r.savedId ?? null });
 
 function initialBuild() {

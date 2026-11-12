@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { attributes, badgeTier, feet, name, positions, tiers } from '../engine.js';
-import { CONTINUOUS_WEIGHTS, IMPORTANCE, SPECIALIZATIONS, byName, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, usesMeta, valueOf } from '../breakpoints.js';
+import { attributes, badgeTier, capsFor, feet, name, positions, tiers, typeWeights } from '../engine.js';
+import { CONTINUOUS_WEIGHTS, IMPORTANCE, SPECIALIZATIONS, archetypeCandidates, byName, capOf, rankPlans, defaultPrefs, goals, heldTiers, metaScore, usesMeta, valueOf } from '../breakpoints.js';
 import { META_CAPS, metaOf } from '../meta.js';
-import { VARIANTS } from '../variants.js';
+import { BROAD_VARIANTS, VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
 import { MODES, ROLES, applyRole, withMode } from '../roles.js';
 import { derive, groups, tierShort } from '../derive.js';
@@ -119,7 +119,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     const opts = optimizerOptions(prefs, cfg);
     const where = { positions: positionsUsed, heights: cfg.heights };
     setState({ running: true, progress: { label: 'Screening bodies' } });
-    const [scr] = await pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts, keep: 12 } }]);
+    const [scr] = await pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts, keep: MAX_BUILDS } }]);
     if (!live()) return;
     if (scr.error) return setState({ running: false, error: scr.error });
     if (!scr.chosen.length) {
@@ -140,7 +140,90 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       if (twin) twin.alsoPositions = [...(twin.alsoPositions ?? []), r.body.position];
       else results.push(r);
     }
-    setState({ running: false, ms: performance.now() - started, result: { results, screened: scr.screened, bodies: scr.bodies } });
+    // Fewer bodies than result slots: fill the rest with other ways to spend the points on the best bodies — each
+    // direction (faster, more playmaking…) re-optimized on that body, keeping only options that really differ.
+    let options = [];
+    const notes = [], armsFailed = new Set();
+    const open = MAX_BUILDS - results.length;
+    if (open > 0) {
+      const leaders = rankPlans([...results], opts).slice(0, Math.min(results.length, 4));
+      // An option only re-spends the extra points: the body's own build keeps its feel attributes and Key/Core badges.
+      const feelIdx = (opts.continuous ?? []).map(k => attributes.findIndex(a => a.name === k)).filter(i => i >= 0);
+      const protect = r => {
+        const minimums = opts.minimums.map((m, i) => feelIdx.includes(i) ? Math.max(m, r.final[i]) : m);
+        const mustHave = { ...opts.mustHave };
+        for (const g of goals) {
+          if (valueOf(prefs, g) < 2) continue;
+          const t = badgeTier(g, r.final, r.body.height);
+          if (t && tiers.indexOf(mustHave[g.name]) < tiers.indexOf(t)) mustHave[g.name] = t;
+        }
+        return { ...opts, minimums, mustHave };
+      };
+      const keeps = (o, r) => feelIdx.every(i => o.final[i] >= r.final[i]) && goals.every(g => valueOf(prefs, g) < 2
+        || tiers.indexOf(badgeTier(g, o.final, o.body.height)) >= tiers.indexOf(badgeTier(g, r.final, r.body.height)));
+      const spread = (o, r) => o.final.reduce((s, v, i) => s + Math.abs(v - r.final[i]), 0);
+      // Body-specific directions: another archetype, the weakest ratings, one cheap attribute pushed to elite.
+      const extras = r => {
+        const list = [];
+        const type = archetypeCandidates(r, 1)[0];
+        if (type != null) list.push({ id: 'archetype', label: 'Different archetype', blurb: 'Same goals as another player type, so Cap Breakers land differently.',
+          job: o => ({ ...o, forceType: type }), keep: x => x.playerType !== r.playerType && spread(x, r) >= 12 });
+        const weak = attributes.map((_, i) => i).filter(i => !feelIdx.includes(i) && r.final[i] < 60 && opts.maximums[i] > r.final[i] + 5)
+          .sort((i, j) => r.final[i] - r.final[j]).slice(0, 4);
+        if (weak.length >= 2) list.push({ id: 'weak', label: 'Shore up weaknesses', blurb: `Raise the lowest ratings: ${weak.map(i => name(attributes[i].name)).join(', ')}.`,
+          job: o => ({ ...o, continuous: [...new Set([...(o.continuous ?? []), ...weak.map(i => attributes[i].name)])],
+            continuousWeights: { ...o.continuousWeights, ...Object.fromEntries(weak.map(i => [attributes[i].name, 1.5])) } }),
+          keep: x => weak.reduce((s, i) => s + x.final[i] - r.final[i], 0) >= 10 });
+        // Longer arms: the longest wingspan whose caps still hold what's protected (longer arms cost shooting caps).
+        const row = positions[r.body.position].find(x => x.height === r.body.height);
+        const floorsHeld = protect(r).minimums;
+        let ws = null;
+        for (let w = row?.maxWingspan ?? 0; w > r.body.wingspan; w--)
+          if (capsFor({ ...r.body, wingspan: w }).every((c, i) => c >= floorsHeld[i])) { ws = w; break; }
+        // Nothing longer keeps everything (e.g. 3PT already at its cap): offer +2″ anyway, clipping only the ratings whose
+        // caps drop — an explicit body change whose cost the card spells out.
+        const forced = !ws && row && row.maxWingspan > r.body.wingspan;
+        if (forced) ws = Math.min(row.maxWingspan, r.body.wingspan + 2);
+        const armCaps = ws ? capsFor({ ...r.body, wingspan: ws }) : null;
+        const lost = forced ? attributes.filter((a, i) => armCaps[i] < floorsHeld[i]).map(a => `${name(a.name)} ${floorsHeld[a.index]}→${armCaps[a.index]}`) : [];
+        if (ws) list.push({ id: 'arms', label: 'Longer arms',
+          blurb: `Same height and weight at a ${feet(ws)} wingspan (+${ws - r.body.wingspan}″): defense, rebounding and dunk caps go up; shooting caps go down.`
+            + (lost.length ? ` Costs ${lost.join(', ')} (cap).` : ws < row.maxWingspan ? ` ${feet(ws + 1)}+ would cost the shooting you have.` : ''),
+          body: { ...r.body, wingspan: ws }, job: o => forced ? { ...o, minimums: o.minimums.map((m, i) => Math.min(m, armCaps[i])) } : o,
+          keep: x => spread(x, r) >= 6, capped: forced ? armCaps : null });
+        const caps = capsFor(r.body), w = typeWeights(r.body.height, r.playerType);
+        for (const i of attributes.map((_, i) => i).filter(i => attributes[i].name !== 'free_throw' && caps[i] >= 88 && r.final[i] < 85 && opts.maximums[i] >= 88 && !feelIdx.includes(i))
+          .sort((i, j) => w[i] - w[j]).slice(0, 2)) {
+          const target = Math.min(caps[i], 90);
+          list.push({ id: 'elite-' + attributes[i].name, label: `Elite ${name(attributes[i].name)}`, blurb: `One stat pushed to ${target}: the cheapest one for this build's archetype.`,
+            job: o => ({ ...o, minimums: o.minimums.map((m, k) => k === i ? Math.max(m, target) : m) }), keep: x => x.final[i] >= target });
+        }
+        return list;
+      };
+      const plansFor = leaders.map(r => ({ r, broad: BROAD_VARIANTS, extra: extras(r) }));
+      const out = await pool.runJobs(plansFor.flatMap(({ r, broad, extra }) => [
+        ...broad.map(v => ({ body: r.body, o: v.apply(protect(r)) })), ...extra.map(e => ({ body: e.body ?? r.body, o: e.job(protect(r)) }))]
+        .map(({ body, o }) => ({ kind: 'body', options: { body, opts: { ...o, archetypes: false, seeds: 0 } } }))),
+        progress('Finding other ways to spend the points'));
+      if (!live()) return;
+      let at = 0;
+      const perLeader = plansFor.map(({ r, broad, extra }) => {
+        const mine = out.slice(at, at + broad.length + extra.length); at += broad.length + extra.length;
+        extra.forEach((e, k) => { const x = mine[broad.length + k];
+          if (e.id === 'arms' && x?.error) armsFailed.add(`${feet(r.body.height)} ${r.body.position} (${feet(e.body.wingspan)} arms)`); });
+        const fromExtra = extra.map((e, k) => { const x = mine[broad.length + k]; return x && !x.error && e.keep(x) ? { ...x, variant: e } : null; }).filter(Boolean);
+        return [...fromExtra, ...pickOptions(r, mine.slice(0, broad.length), BROAD_VARIANTS)].map(o => ({ ...o, r }));
+      }).map(list => list.filter(o => o.variant?.capped
+        ? keeps({ ...o, final: o.final.map((v, i) => v >= Math.min(o.r.final[i], o.variant.capped[i]) ? Math.max(v, o.r.final[i]) : v) }, o.r)
+        : keeps(o, o.r))
+        .filter((o, k, all) => ![...results, ...all.slice(0, k)].some(x => sameBody(x.body, o.body) && spread(x, o) < 12))
+        .map(({ r, ...o }) => ({ ...o, variantOf: r })));
+      // Round-robin across bodies so the extra slots aren't all one body.
+      for (let k = 0; options.length < open && perLeader.some(l => l.length > k); k++)
+        for (const list of perLeader) if (list[k] && options.length < open) options.push(list[k]);
+    }
+    if (armsFailed.size) notes.push(`No longer-arms option: your must-have badges don't fit on ${[...armsFailed].join(', ')}. Each inch of wingspan lowers shooting caps by about 2.`);
+    setState({ running: false, ms: performance.now() - started, result: { results, options, notes, screened: scr.screened, bodies: scr.bodies } });
   }
 
   function pickRole(r) {
@@ -254,17 +337,30 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         : b.value - a.value).map((r, k) =>
         <PlanCard key={k} rank={k + 1} plan={r} prefs={prefs} mode={cfg.mode} current={!!cfg.from && sameBody(r.body, source.body)}
           onOpen={onOpen} onCompare={onCompare} onSave={onSave} />)}</div>
+      {state.result.options?.length > 0 && <>
+        <h3 className="section-title">Other ways to spend it <span className="muted small">only {state.result.results.length} bod{state.result.results.length === 1
+          ? 'y fits' : 'ies fit'}, so here are different allocations of the extra points on the best ones, compared with that body's build above.</span></h3>
+        {state.result.notes?.map(n => <p key={n} className="muted small">{n}</p>)}
+        <div className="results">{state.result.options.map((r, k) => <PlanCard key={k} plan={r} prefs={prefs} mode={cfg.mode}
+          variant={r.variant} compareTo={r.variantOf} onOpen={onOpen} onCompare={onCompare} onSave={onSave} />)}</div>
+      </>}
     </>}
   </div>;
 }
 
 // Options for one body (used by the Builder's recommender): Meta plus each direction, keeping only the ones that
 // noticeably improve something real (their own direction, and more than a free-throw bump).
-export function pickOptions(meta, out) {
-  return VARIANTS.map((v, k) => {
+export const MAX_BUILDS = 12;
+
+export function pickOptions(meta, out, list = VARIANTS) {
+  return list.map((v, k) => {
     const r = out[k];
     if (!r || r.error) return null;
     if (r.final.reduce((s, x, i) => s + Math.abs(x - meta.final[i]), 0) < 12) return null;
+    if (v.id === 'most-badges') {
+      const tiersOf = x => derive({ body: x.body, base: x.manual, breakers: x.breakers, category: x.category }).badgePoints;
+      return tiersOf(r) >= tiersOf(meta) + 2 ? { ...r, variant: v } : null;
+    }
     const gains = aspectsOf(r, meta, v).filter(d => d.good && d.text !== 'Better free throws');
     if (!gains.length || gains.reduce((s, d) => s + d.x, 0) < 8) return null;
     if (v.aspects && !gains.some(d => v.aspects.includes(d.text))) return null;
