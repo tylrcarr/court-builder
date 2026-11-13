@@ -32,6 +32,19 @@ archetype doesn't fit under 99, every archetype is tried, with each breaker chos
 Overall (so it can lower a rating the leading archetype weighs heavily and let a better one take over). Every result is
 filled to 99 Overall, as the game requires.
 
+The greedy search climbs one breakpoint at a time, so it can stop at a worse arrangement than the best for the tiers it
+reached. The Lab therefore **polishes its leaders** (iterated local search): each is re-planned with every worthwhile
+tier it holds kept, as its own and the likeliest other archetypes (what the Builder's Re-optimize does), and solved
+**exactly** within a few points of itself. The exact planner (`src/mip.js`) treats a build as a multiple-choice knapsack:
+each attribute picks a base rating plus a breaker count. Overall ≤ 99 is one linear limit per archetype (a weighted
+average: Σ w·s(r)·(r − T) ≤ 0). Badge tiers are AND/OR rules on final ratings and linked minimums are linear rules. It's
+solved with [HiGHS](https://highs.dev) (MIT, WebAssembly) in the Lab's workers; if it can't load, the Lab runs without it.
+Whichever version scores best on picks + meta is kept.
+
+Speed: the breaker planner learns, per body, which archetypes actually win and only re-tries those (with a full sweep
+every few calls), Overall is updated incrementally, and linked minimums re-propagate only from the rating that changed.
+A body's first optimization takes about 1–2 s.
+
 ## Features
 
 - **Build Lab**
@@ -45,6 +58,8 @@ filled to 99 Overall, as the game requires.
   - Nothing fits with your Cap Breakers? It shows the builds with the fewest extra that make it work (up to 28, a
     year's worth per third-party guides; 2K hasn't published a total), with a button to use that many.
   - "What's blocking it" explains searches with no results. Searches can be saved.
+  - Click a rating on a result card to open its Cap Breaker chart; click a step to try it (the card's ratings, badges
+    and meta update; "Back to the plan" undoes it).
 - **Builder**
   - Body controls, attribute sliders with linked minimums, body caps and the 99 Overall budget, and Cap Breaker
     ladders.

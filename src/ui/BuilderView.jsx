@@ -394,8 +394,11 @@ function SameBreakpoints({ build, d, prefs, labCfg, setBuild, onSave, notify }) 
     const mine = pool.token.current, live = () => mine === pool.token.current;
     const mustHave = {};
     for (const g of goals) { const t = badgeTier(g, d.final, h); if (t) mustHave[g.name] = t; }
-    const opts = optimizerOptions(prefs, { ...labCfg, from: null, mustHave,
+    const labOpts = optimizerOptions(prefs, { ...labCfg, from: null, mustHave,
       breakers: { general: generalNow, future: 0, special: { category: build.category } } });
+    // The Lab's minimums were set for whatever the Lab was searching (another position, a role): keep only as much of
+    // each as this build already has, so re-planning never demands a rating it doesn't hold or this body can't reach.
+    const opts = { ...labOpts, minimums: labOpts.minimums.map((m, i) => Math.min(m, d.final[i], d.caps[i])) };
     const at = n => attributes.findIndex(a => a.name === n);
     const floor = (o, names) => ({ ...o, minimums: o.minimums.map((m, i) => names.includes(attributes[i].name) ? Math.max(m, d.final[i]) : m) });
     const options = [

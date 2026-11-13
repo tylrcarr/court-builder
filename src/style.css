@@ -587,3 +587,7 @@ button.mini.pickable { font: inherit; font-size: .74rem; color: inherit; cursor:
 .reason-name { min-width: 128px; color: var(--muted); }
 .reason-name b { color: var(--text); }
 .reason-spare { color: var(--warn); }
+/* Lab card breaker chart: clickable steps (tried on the card); steps with no gain stay plain. */
+.cb-chart .breakers:not(.static) > span { display: flex; justify-content: center; padding: .05rem 0; font-size: .66rem; border: 1px solid var(--line2, rgba(255,255,255,.12)); border-radius: 6px; opacity: .35; }
+.cb-chart .breakers:not(.static) button { padding: .05rem 0; font-size: .66rem; border-radius: 6px; }
+.result-stats .stale { opacity: .45; }

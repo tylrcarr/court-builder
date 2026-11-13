@@ -3,7 +3,7 @@
 // The in-game builder requires every build to be filled to 99 Overall, so "budget" here means
 // how the 99 is spent, not how much is left over.
 import { alternatives, attributes, badgeTier, badges, capsFor, defaultBody, inHeight, ladder, mergeFloors,
-  overall, overallAs, playerTypeCount, positions, resolveLinks, tiers } from './engine.js';
+  overall, overallAs, playerTypeCount, positions, lowerResolved, raiseResolved, resolveLinks, scoreAsOfSums, scoreOfSums, sumsOf, sumsWith, tiers } from './engine.js';
 
 const N = attributes.length;
 const LIMIT = 99 + 1e-8;
@@ -12,6 +12,9 @@ export const tierRank = tier => tier ? tiers.indexOf(tier) + 1 : 0;
 export function clampLinks(manual, height, caps) {
   return resolveLinks(manual, height).map((value, i) => Math.min(value, caps[i]));
 }
+// The planners keep the unclamped resolved ratings U (resolveLinks of the manual ones) next to the clamped base, so a
+// one-rating change only re-propagates that rating's links (lowerResolved / raiseResolved) — exact, caps or not.
+const capAt = (U, caps) => U.map((v, i) => Math.min(v, caps[i]));
 
 function ctxFor(body) {
   return { body, h: body.height, caps: capsFor(body) };
@@ -21,18 +24,34 @@ const score = (ratings, h) => overall(ratings, h);
 
 // Smallest base rating whose first k breakers reach target (null if impossible).
 // ctx.baseMin (optional): base ratings that must hold before any breaker (specialization unlocks, e.g. 60 three).
-function baseForTarget(i, target, k, ctx, playerType) {
-  for (let b = Math.max(25, ctx.baseMin?.[i] ?? 25); b <= Math.min(target, ctx.caps[i]); b++) {
-    const gains = ladder(i, b, ctx.caps[i], ctx.h, playerType).slice(0, k);
-    if (b + gains.reduce((s, g) => s + g, 0) >= target) return b;
+// reach[b * 6 + k]: final rating from base b with k breakers, per (height, archetype, attribute, cap); cached.
+const reachCache = new Map();
+function reachTable(i, cap, h, type) {
+  const key = ((h * 16 + type) * 32 + i) * 128 + cap;
+  let t = reachCache.get(key);
+  if (!t) {
+    t = new Int16Array(100 * 6);
+    for (let b = 25; b <= cap; b++) {
+      const gains = ladder(i, b, cap, h, type);
+      let f = b;
+      t[b * 6] = f;
+      for (let k = 1; k <= 5; k++) t[b * 6 + k] = f += gains[k - 1];
+    }
+    reachCache.set(key, t);
   }
+  return t;
+}
+function baseForTarget(i, target, k, ctx, playerType) {
+  const t = reachTable(i, ctx.caps[i], ctx.h, playerType);
+  for (let b = Math.max(25, ctx.baseMin?.[i] ?? 25); b <= Math.min(target, ctx.caps[i]); b++) if (t[b * 6 + k] >= target) return b;
   return null;
 }
 
 export function finalsFor(base, breakers, ctx) {
   const { playerType } = score(base, ctx.h);
-  return base.map((rating, i) => rating + ladder(i, rating, ctx.caps[i], ctx.h, playerType)
-    .slice(0, breakers[i]).reduce((s, g) => s + g, 0));
+  return base.map((rating, i) => rating > ctx.caps[i] || rating < 25 || !Number.isInteger(rating)
+    ? rating + ladder(i, rating, ctx.caps[i], ctx.h, playerType).slice(0, breakers[i]).reduce((s, g) => s + g, 0)
+    : reachTable(i, ctx.caps[i], ctx.h, playerType)[rating * 6 + Math.min(5, breakers[i])]);
 }
 
 function isEligible(i, special) {
@@ -45,13 +64,27 @@ export function satisfy(targets, ctx, pool = {}) {
   if (plan || !(pool.general || pool.special?.count) || targets.some((t, i) => t > ctx.caps[i])) return plan;
   // Breaker gains depend on the player type, and planning from the all-base starting point locks in whatever archetype
   // that is (often a poor one for breakers). If it doesn't fit, plan for each archetype and keep the cheapest that does.
+  // Learn per body which archetypes win: the first calls try all of them, later ones only those that have won (any
+  // archetype still gets a full sweep every SWEEP_EVERY calls, so a new winner can show up).
+  const seen = ctx.typeWins ??= { calls: 0, wins: new Map() };
+  const all = Array.from({ length: playerTypeCount(ctx.h) }, (_, t) => t);
+  const learned = [...seen.wins.entries()].sort((a, b) => b[1] - a[1]).slice(0, TYPE_SHORTLIST).map(([t]) => t);
+  const types = seen.calls < LEARN_CALLS || seen.calls % SWEEP_EVERY === 0 || !learned.length ? all : learned;
+  seen.calls++;
   let best = null;
-  for (let type = 0; type < playerTypeCount(ctx.h); type++) {
+  for (const type of types) {
     const p = satisfyAs(targets, ctx, pool, type);
     if (p && (!best || p.ovr < best.ovr)) best = p;
   }
+  if (!best && types !== all) for (const type of all) if (!types.includes(type)) {
+    const p = satisfyAs(targets, ctx, pool, type);
+    if (p && (!best || p.ovr < best.ovr)) best = p;
+  }
+  if (best) seen.wins.set(best.playerType, (seen.wins.get(best.playerType) ?? 0) + 1);
   return best;
 }
+
+const LEARN_CALLS = 24, SWEEP_EVERY = 16, TYPE_SHORTLIST = 4;
 
 function satisfyNatural(targets, ctx, { general = 0, special = { category: '', count: 0 } } = {}) {
   // Breakers never raise a rating past the body's physical cap.
@@ -63,6 +96,8 @@ function satisfyNatural(targets, ctx, { general = 0, special = { category: '', c
   let base = clampLinks(manual, ctx.h, ctx.caps);
   let current = score(base, ctx.h);
   if (!generalLeft && !specialLeft) return pack();
+  let sums = sumsOf(base, ctx.h);
+  let U = resolveLinks(manual, ctx.h);
 
   for (let round = 0; round < general + (special.count ?? 0); round++) {
     let best = null;
@@ -73,15 +108,16 @@ function satisfyNatural(targets, ctx, { general = 0, special = { category: '', c
       const b = baseForTarget(i, targets[i], k[i] + 1, ctx, current.playerType);
       if (b == null || b >= floors[i]) continue;
       const trialFloors = floors.map((f, j) => j === i ? b : f);
-      const trial = clampLinks(trialFloors, ctx.h, ctx.caps);
-      const s = score(trial, ctx.h);
+      const tU = lowerResolved(U, trialFloors, ctx.h, i) ?? resolveLinks(trialFloors, ctx.h), trial = capAt(tU, ctx.caps);
+      const trialSums = sumsWith(sums, base, trial, ctx.h);
+      const s = scoreOfSums(trialSums, ctx.h);
       const saving = current.score - s.score;
-      if (saving > 1e-9 && (!best || saving > best.saving)) best = { i, b, trialFloors, s, saving, useSpecial };
+      if (saving > 1e-9 && (!best || saving > best.saving)) best = { i, b, trialFloors, trial, tU, trialSums, s, saving, useSpecial };
     }
     if (!best) break;
     k[best.i]++;
     floors = best.trialFloors;
-    current = best.s;
+    current = best.s; base = best.trial; sums = best.trialSums; U = best.tU;
     if (best.useSpecial) specialLeft--; else generalLeft--;
   }
   manual = floors;
@@ -119,7 +155,10 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
   // Each breaker is picked by what it takes off the real Overall (the best archetype's score), not just `type`'s: lowering
   // a base rating the leading archetype weighs heavily (e.g. steal under a lockdown type) is what lets `type` take over.
   // Ties (the leader didn't move) go to the biggest drop in `type`'s own score.
-  const both = f => { const b = clampLinks(f, ctx.h, ctx.caps); return [score(b, ctx.h).score, overallAs(b, ctx.h, type)]; };
+  let base0 = clampLinks(floors, ctx.h, ctx.caps), sums0 = sumsOf(base0, ctx.h);
+  let U0 = resolveLinks(floors, ctx.h);
+  const both = (f, i) => { const tU = (i != null && lowerResolved(U0, f, ctx.h, i)) || resolveLinks(f, ctx.h), b = capAt(tU, ctx.caps), sm = sumsWith(sums0, base0, b, ctx.h);
+    return [scoreOfSums(sm, ctx.h).score, scoreAsOfSums(sm, ctx.h, type), b, sm, tU]; };
   let [cur, curAs] = both(floors);
   const rounds = generalLeft + specialLeft;
   for (let round = 0; round < rounds; round++) {
@@ -131,35 +170,37 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
       const b = baseForTarget(i, targets[i], k[i] + 1, ctx, type);
       if (b == null || b >= floors[i]) continue;
       const trialFloors = floors.map((f, j) => j === i ? b : f);
-      const [s, sAs] = both(trialFloors);
+      const [s, sAs, tb, tsm, tU] = both(trialFloors, i);
       const saving = cur - s, own = curAs - sAs;
       if (saving < -1e-9 || (saving <= 1e-9 && own <= 1e-9)) continue;
       const key = Math.max(0, saving) * 1e3 + own;
-      if (!best || key > best.key) best = { i, trialFloors, s, sAs, key, useSpecial };
+      if (!best || key > best.key) best = { i, trialFloors, s, sAs, key, useSpecial, tb, tsm, tU };
     }
     if (!best) break;
-    k[best.i]++; floors = best.trialFloors; cur = best.s; curAs = best.sAs;
+    k[best.i]++; floors = best.trialFloors; cur = best.s; curAs = best.sAs; base0 = best.tb; sums0 = best.tsm; U0 = best.tU;
     if (best.useSpecial) specialLeft--; else generalLeft--;
   }
   // Make `type` the player type: raise whichever base rating closes the gap to the leading archetype fastest.
-  let manual = [...floors], base = clampLinks(manual, ctx.h, ctx.caps);
+  let manual = [...floors], base = clampLinks(manual, ctx.h, ctx.caps), sums = sumsOf(base, ctx.h);
+  let U = resolveLinks(manual, ctx.h);
   for (let guard = 0; guard < 300; guard++) {
-    const s = score(base, ctx.h);
+    const s = scoreOfSums(sums, ctx.h);
     if (s.score > LIMIT) return null;
     if (s.playerType === type) break;
-    const gap0 = s.score - overallAs(base, ctx.h, type);
+    const gap0 = s.score - scoreAsOfSums(sums, ctx.h, type);
     let best = null;
     for (let i = 0; i < N; i++) {
       if (base[i] >= Math.min(ctx.caps[i], ctx.maxes?.[i] ?? 99)) continue; // your maximums hold here too
       const trialManual = manual.map((v, j) => j === i ? Math.max(v, base[j]) + 1 : v);
-      const trial = clampLinks(trialManual, ctx.h, ctx.caps);
-      const ts = score(trial, ctx.h);
-      const closed = gap0 - (ts.score - overallAs(trial, ctx.h, type));
+      const tU = raiseResolved(U, ctx.h, i, Math.max(U[i], trialManual[i])), trial = capAt(tU, ctx.caps);
+      const tsm = sumsWith(sums, base, trial, ctx.h);
+      const ts = scoreOfSums(tsm, ctx.h);
+      const closed = gap0 - (ts.score - scoreAsOfSums(tsm, ctx.h, type));
       const cost = ts.score - s.score;
-      if (closed > 1e-9 && (!best || closed / Math.max(1e-4, cost) > best.r)) best = { trialManual, trial, r: closed / Math.max(1e-4, cost) };
+      if (closed > 1e-9 && (!best || closed / Math.max(1e-4, cost) > best.r)) best = { trialManual, trial, tsm, tU, r: closed / Math.max(1e-4, cost) };
     }
     if (!best) return null;
-    manual = best.trialManual; base = best.trial;
+    manual = best.trialManual; base = best.trial; sums = best.tsm; U = best.tU;
   }
   const s = score(base, ctx.h);
   if (s.playerType !== type || s.score > LIMIT) return null;

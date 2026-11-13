@@ -5,11 +5,12 @@
 // handle, speed, agility…) — those are "continuous". This module finds breakpoints, measures dead
 // weight, and optimizes a body badge-first: must-have tiers, then the best badge value per Overall point,
 // then continuous attributes with whatever is left.
-import { alternatives, attributes, badges, badgeTier, capsFor, defaultBody, empty, inHeight, ladder, mergeFloors, overall,
+import { alternatives, attributes, badges, badgeTier, capsFor, defaultBody, empty, inHeight, ladder, linksFor, mergeFloors, overall,
   playerTypeCount, positions, tiers, typeWeights } from './engine.js';
+import { mipReady, solvePlan } from './mip.js';
 import { clampLinks, fill, finalsFor, satisfy, satisfyAs, tierRank } from './solver.js';
 import { animations, isAnimation } from './animations.js';
-import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, heightMeta, metaCap, reboundGate, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
+import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, dunkGate, finishGate, gatedTierWorth, heightMeta, metaCap, strengthFree, reboundGate, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
 
 // Everything a build can aim for: badges plus animation unlocks (same shape, one tier).
 export const goals = [...badges, ...animations];
@@ -107,7 +108,7 @@ const metaPart = (prefs, goal) => usesMeta(prefs, goal) ? META_RATE * metaRate(p
 const drives = Object.fromEntries(goals.map(g => [g.name, g.tiers.some(t => t.requirements.some(r => DRIVE_ATTRS.has(r.name)))]));
 // Highest tier worth buying: yours if you've picked the badge, otherwise the meta's.
 const tierCapOf = (prefs, goal) => valueOf(prefs, goal) > 0 || prefs?.caps?.[goal.name] != null ? capOf(prefs, goal)
-  : Math.min(capOf(prefs, goal), metaCap(goal));
+  : Math.min(capOf(prefs, goal), metaCap(goal, prefs?.position));
 // Rough per-tier worth for ranking candidates (yours + meta).
 const worthOf = (prefs, goal) => valueOf(prefs, goal) + metaPart(prefs, goal);
 
@@ -118,7 +119,8 @@ export function badgeValue(final, height, prefs) {
     if (v <= 0 && m <= 0) continue;
     const rank = tierRank(badgeTier(b, final, height));
     if (v > 0) total += v * worthRank(prefs, b, rank);
-    if (m > 0) total += m * dunkFactor(b, height) * metaTierWorth(b, Math.min(rank, tierCapOf(prefs, b))) * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
+    if (m > 0) total += m * dunkFactor(b, height) * gatedTierWorth(b, Math.min(rank, tierCapOf(prefs, b)), prefs?.position, final[idx.driving_dunk])
+      * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
   }
   return total;
 }
@@ -130,7 +132,8 @@ function metaParts(final, height, position, mode) {
   let total = 0;
   for (const b of goals) {
     const m = metaOf(b, position, mode);
-    if (m > 0 && inHeight(b, height)) total += m * dunkFactor(b, height) * metaTierWorth(b, Math.min(tierRank(badgeTier(b, final, height)), metaCap(b)))
+    if (m > 0 && inHeight(b, height)) total += m * dunkFactor(b, height)
+      * gatedTierWorth(b, Math.min(tierRank(badgeTier(b, final, height)), metaCap(b, position)), position, final[idx.driving_dunk])
       * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
   }
   for (const [name, [w, target, floor = 60, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(position, height)))
@@ -160,13 +163,14 @@ function nearParts(final, near, height, position, mode) {
   for (const b of goals) {
     const m = metaOf(b, position, mode);
     if (m <= 0 || !inHeight(b, height)) continue;
-    const rank = Math.min(tierRank(badgeTier(b, final, height)), metaCap(b));
-    if (rank >= metaCap(b) || rank >= b.tiers.length) continue;
+    const cap = metaCap(b, position), rank = Math.min(tierRank(badgeTier(b, final, height)), cap);
+    if (rank >= cap || rank >= b.tiers.length) continue;
     const next = b.tiers[rank];
     let k = Infinity;
     for (const floor of alternatives(next)) k = Math.min(k, floor.reduce((s, f, i) => s + (f > final[i] ? need(i, f) : 0), 0));
     if (k < 1 || k >= NEAR_CREDIT.length) continue;
-    total += NEAR_CREDIT[k] * avail * m * dunkFactor(b, height) * (metaTierWorth(b, rank + 1) - metaTierWorth(b, rank))
+    const dunk = final[idx.driving_dunk];
+    total += NEAR_CREDIT[k] * avail * m * dunkFactor(b, height) * (gatedTierWorth(b, rank + 1, position, dunk) - gatedTierWorth(b, rank, position, dunk))
       * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
   }
   return total;
@@ -178,13 +182,17 @@ export function nearOf(r) {
 }
 export const nearOfDerived = d => ({ applied: d.applied, ladders: d.ladders, used: d.breakerCount });
 const metaMax = new Map();
-export function metaScore(final, height, position, mode = '5v5', near = null) {
+function metaMaxOf(height, position, mode) {
   const key = [height, position, mode].join();
   if (!metaMax.has(key)) metaMax.set(key, metaParts(attributes.map(() => 99), height, position, mode));
+  return metaMax.get(key);
+}
+export function metaScore(final, height, position, mode = '5v5', near = null) {
   const share = 100 * (metaParts(final, height, position, mode) + (near ? nearParts(final, near, height, position, mode) : 0))
-    / Math.max(1e-9, metaMax.get(key));
+    / Math.max(1e-9, metaMaxOf(height, position, mode));
   return share * heightMeta(height, position) * shootingGate(final[idx.three_point])
-    * reboundGate(final[idx.defensive_rebound], position, height, final[idx.speed_with_ball]);
+    * reboundGate(final[idx.defensive_rebound], position, height, final[idx.speed_with_ball])
+    * finishGate(final[idx.driving_dunk], final[idx.driving_layup]);
 }
 
 // Goal name → tier rank (up to its worth-paying cap) for every valued badge/animation these ratings hold.
@@ -204,7 +212,7 @@ export const byName = Object.fromEntries(goals.map(b => [b.name, b]));
 // feeds post badges (Post Fade silver+ is low-normal at best), so on most builds it isn't one.
 export function metaAttributes(position, height) {
   const out = new Set();
-  for (const g of goals) if (inHeight(g, height) && metaOf(g, position) * metaTierWorth(g, metaCap(g)) >= 1.5)
+  for (const g of goals) if (inHeight(g, height) && metaOf(g, position) * metaTierWorth(g, metaCap(g, position)) >= 1.5)
     for (const t of g.tiers) for (const q of t.requirements) out.add(q.attribute ?? idx[q.name]);
   return out;
 }
@@ -220,7 +228,7 @@ export function archetypeHolders(d, drop = 6) {
     for (let x = 1; x <= drop && d.ratings[i] - x >= 25; x++) { to = overall(d.ratings.map((v, j) => j === i ? v - x : v), d.height).playerType; if (to !== type) { k = x; break; } }
     if (!k) continue;
     const finals = d.final.map((v, j) => j === i ? v - k : v);
-    const costs = goals.some(g => metaOf(g, d.position) * metaTierWorth(g, metaCap(g)) >= 1.5 && inHeight(g, d.height)
+    const costs = goals.some(g => metaOf(g, d.position) * metaTierWorth(g, metaCap(g, d.position)) >= 1.5 && inHeight(g, d.height)
       && tierRank(badgeTier(g, finals, d.height)) < tierRank(badgeTier(g, d.final, d.height)));
     if (!costs) out.push({ i, rating: d.ratings[i], to, free: k - 1 });
   }
@@ -342,7 +350,7 @@ export function optimizeBody(body, opts) {
     const r = optimizeOnce(body, { ...opts, mustHave: { ...opts.mustHave, [seed.name]: seed.tier } });
     if (!r.error && r.value > first.value + 1e-9) first = { ...r, seed };
   }
-  first = dropPass(first, body, opts);
+  if (!opts.noDrop) first = dropPass(first, body, opts);
   if (!opts.refine) return first;
   // Second pass: lock in what the first pass reached and look for a cheaper arrangement of it.
   const mustHave = { ...opts.mustHave };
@@ -525,17 +533,122 @@ function optimizeOnce(body, opts) {
     const topped = fill(filled, weights, ctx, [], filled.final, opts.maximums ?? 99);
     if (topped.ovr > filled.ovr + 1e-9) filled = { ...filled, ...topped };
   }
+  return finishPlan(body, opts, ctx, filled, { targets, upgrades, feelNow, fallback: start.plan });
+}
+
+// Shared tail of every optimizer result: the requirements-only template, the breaker schedule and today's ratings.
+function finishPlan(body, opts, ctx, filled, { targets, upgrades = [], feelNow, fallback = null }) {
+  const category = opts.breakers?.special?.category ?? '';
+  const special = { category, count: category ? MAX_SPECIALIZED : 0 };
+  const now = opts.breakers?.general ?? 0, future = opts.breakers?.future ?? 0;
+  const floors = mergeFloors(opts.minimums ?? empty(), category ? specMinimums(category) : empty());
+  const required = Object.entries(opts.mustHave ?? {}).filter(([, t]) => t).map(([name, tier]) => ({ badge: byName[name], tier }));
+  const val = f => objective(f, ctx.h, opts);
   // The requirements-only template: musts + minimums + specialization met by base ratings alone (no Cap Breakers), nothing
   // else spent. Falls back to the breaker plan when the requirements can't fit under 99 without breakers.
   const bare = cheapestPlan(floors, required, ctx, { general: 0, special: { category, count: 0 } });
-  const tp = bare?.plan ?? start.plan;
+  const tp = bare?.plan ?? fallback ?? filled;
   const template = { manual: tp.manual, base: tp.base, breakers: tp.breakers, final: tp.final, ovr: tp.ovr, needsBreakers: !bare };
-  const result = { body, ...filled, template, targets, upgrades, value: val(filled.final), badgeValue: badgeValue(filled.final, ctx.h, opts),
+  const result = { body, ...filled, template, targets: targets ?? filled.final, upgrades, value: val(filled.final), badgeValue: badgeValue(filled.final, ctx.h, opts),
     budget: now + future, now, future, category: special.category, specialCount: special.count };
-  result.schedule = breakerSchedule(result, ctx, opts, feelNow);
+  result.schedule = breakerSchedule(result, ctx, opts, feelNow ?? continuousTerms(opts, filled.final).map(t => t[0]));
   result.today = todayFinal(result, ctx, now + special.count);
   result.todayValue = val(result.today);
   return result;
+}
+
+// ---------------------------------------------------------------- exact planner (MIP)
+
+// The scoring the exact planner maximizes: the same picks + meta the Lab ranks by (archetypeScore = objective +
+// ARCH_META × metaScore), written as per-attribute values and per-tier badge worths. The meta score's gates (three under
+// 78, boards under 85) multiply everything, so they're linearized around a hint build (usually the greedy result):
+// each gate counts as a penalty on its own attribute, scaled by the hint's meta.
+function mipSpec(body, opts, type, hint) {
+  opts = { ...opts, position: body.position, height: body.height };
+  const h = body.height, pos = body.position, caps = capsFor(body), mode = opts.mode ?? '5v5';
+  const category = opts.breakers?.special?.category ?? '';
+  const maxes = attributes.map((_, i) => Math.min(caps[i], opts.maximums?.[i] ?? 99));
+  const spec0 = category ? specMinimums(category) : empty();
+  const minimums = mergeFloors(opts.minimums ?? empty(), spec0).map((v, i) => Math.min(v, maxes[i]));
+  const metaOn = metaRate(opts) > 0;
+  const hintFinal = hint?.final ?? minimums;
+  const K = metaOn ? ARCH_META * 100 * heightMeta(h, pos) / Math.max(1e-9, metaMaxOf(h, pos, mode)) : 0;
+  const share = metaParts(hintFinal, h, pos, mode);
+  const g3 = shootingGate(hintFinal[idx.three_point]);
+  const gReb = f => reboundGate(f, pos, h, hintFinal[idx.speed_with_ball]);
+  const gR0 = gReb(hintFinal[idx.defensive_rebound]);
+  const gF = finishGate(hintFinal[idx.driving_dunk], hintFinal[idx.driving_layup]);
+  const gR = gR0 * gF; // gates other than the one being linearized multiply the linear parts
+  const terms = continuousTerms(opts, hintFinal);
+  const metaTerms = metaOn ? Object.entries(attrMetaFor(pos, h)).map(([name, [w, target, floor = 60, ceiling = 99, hit = 0]]) => [idx[name], w, target, floor, ceiling, hit]) : [];
+  const smooth = new Set([...terms.map(t => t[0]), ...metaTerms.map(t => t[0])]);
+  if (metaOn) { smooth.add(idx.three_point); smooth.add(idx.driving_dunk); if (gR0 < 1 || metaGroup(pos) === 'big' || h >= 81) smooth.add(idx.defensive_rebound); }
+  const attrValue = (i, f) => {
+    let v = 0;
+    for (const [j, w, target, floor, ceiling, hit] of terms) if (j === i) v += termValue(w, target, f, floor, ceiling, hit);
+    for (const [j, w, target, floor, ceiling, hit] of metaTerms) if (j === i)
+      v += K * g3 * gR * termValue(w * ATTR_META_RATE * CONTINUOUS_RATE / META_RATE, target - 60, Math.max(0, f - 60), Math.max(0, floor - 60), ceiling - 60, hit);
+    if (K && i === idx.three_point) v += K * share * gR * shootingGate(f);
+    if (K && i === idx.defensive_rebound) v += K * share * g3 * gF * gReb(f);
+    if (K && i === idx.driving_dunk) v += K * share * g3 * gR0 * finishGate(f, hintFinal[idx.driving_layup]);
+    return v;
+  };
+  const goalsOut = [], marks = {};
+  for (const b of goals) {
+    if (!inHeight(b, h)) continue;
+    const v = valueOf(opts, b), m = metaPart(opts, b), ms = K ? metaOf(b, pos, mode) : 0, df = dunkFactor(b, h);
+    const must = tierRank(opts.mustHave?.[b.name]);
+    if (v <= 0 && m <= 0 && ms <= 0 && !must) continue;
+    const step = (k, cap, worth) => worth(Math.min(k, cap)) - worth(Math.min(k - 1, cap));
+    const tiersOut = b.tiers.map((t, n) => {
+      const k = n + 1;
+      const plainUser = v > 0 ? v * step(k, capOf(opts, b), x => x) : 0;
+      // Meta worth split into the part every build gets and the strength part that only a dunker gets (STRENGTH_FREE).
+      const free = strengthFree(b, pos);
+      const freeW = x => metaTierWorth(b, free == null ? x : Math.min(x, free)), gatedW = x => metaTierWorth(b, x) - freeW(x);
+      const metaOfPart = worth => (m > 0 ? m * df * step(k, tierCapOf(opts, b), worth) : 0)
+        + (ms > 0 ? K * g3 * gR * ms * df * step(k, metaCap(b, pos), worth) : 0);
+      const meta = metaOfPart(freeW), strength = free == null ? 0 : metaOfPart(gatedW);
+      const alts = alternatives(t).map(floor => floor.map((f, i) => [i, f]).filter(([, f]) => f > 25));
+      for (const alt of alts) for (const [i, f] of alt) (marks[i] ??= new Set()).add(f);
+      const gates = [];
+      if (drives[b.name] && meta > 1e-12) gates.push({ attr: idx.speed_with_ball, fn: driveFactor, worth: meta });
+      if (strength > 1e-12) gates.push({ attr: idx.driving_dunk, fn: dunkGate, worth: strength });
+      return { alts, plain: plainUser + (drives[b.name] ? 0 : meta), gates };
+    });
+    goalsOut.push({ must, tiers: tiersOut });
+  }
+  const eligible = new Set(attributes.filter(a => category && (a.discipline === category || a.name === 'free_throw')).map(a => a.index));
+  return { h, type, caps, minimums, maximums: maxes, baseMin: category ? spec0 : null,
+    general: (opts.breakers?.general ?? 0) + (opts.breakers?.future ?? 0), specialCount: category ? MAX_SPECIALIZED : 0, eligible,
+    smooth, marks: Object.fromEntries(Object.entries(marks).map(([i, s]) => [i, [...s]])), attrValue, goals: goalsOut,
+    links: linksFor(h) };
+}
+
+// Exact plan for one body as one archetype; null when the solver isn't loaded, nothing fits, or the plan doesn't hold up
+// under the real game rules (links, Overall, the archetype it planned for, musts and minimums).
+export function mipBody(body, opts, type, hint = null) {
+  if (!mipReady()) return null;
+  const spec = mipSpec(body, opts, type, hint);
+  if (hint && opts.mipRadius) spec.near = { final: hint.final, breakers: hint.breakers, radius: opts.mipRadius };
+  let sol = solvePlan(spec, { timeLimit: opts.mipTime ?? 4, full: opts.mipFull ?? true });
+  if (!sol?.base) return null;
+  const ctx = ctxFor(body);
+  const base = clampLinks(sol.base, ctx.h, ctx.caps);
+  const s = overall(base, ctx.h);
+  if (s.score > 99 + 1e-8 || !base.every((v, i) => v <= ctx.caps[i])) return null;
+  const final = finalsFor(base, sol.breakers, ctx);
+  if (final.some((v, i) => v < spec.minimums[i])) return null;
+  const required = new Map(Object.entries(opts.mustHave ?? {}).filter(([, t]) => t).map(([n, t]) => [n, tierRank(t)]));
+  if (!meets(final, ctx.h, required)) return null;
+  const category = opts.breakers?.special?.category ?? '';
+  const elig = i => category && (attributes[i].discipline === category || attributes[i].name === 'free_throw');
+  const special = category ? MAX_SPECIALIZED : 0;
+  const onElig = sol.breakers.reduce((t, n, i) => t + (elig(i) ? n : 0), 0);
+  const specialUsed = Math.min(special, onElig), generalUsed = sol.breakers.reduce((t, n) => t + n, 0) - specialUsed;
+  const plan = { manual: base, base, breakers: sol.breakers, final, ovr: s.score, playerType: s.playerType, generalUsed, specialUsed };
+  return { ...finishPlan(body, { ...opts, position: body.position, height: body.height }, ctx, plan, {}), exact: true,
+    mip: { status: sol.status, planned: type, size: sol.size } };
 }
 
 // Lower each target to the lowest breakpoint that keeps every valued tier the targets alone already earn.
@@ -860,7 +973,7 @@ export function nudgeBodies(r, n = 3) {
   const marks = new Map();
   const add = (i, m, worth) => { if (!marks.has(i)) marks.set(i, new Map()); marks.get(i).set(m, Math.max(marks.get(i).get(m) ?? 0, worth)); };
   for (const g of goals) if (inHeight(g, h) && metaOf(g, pos) >= 1)
-    g.tiers.forEach((t, k) => { if (k < metaCap(g)) for (const q of t.requirements)
+    g.tiers.forEach((t, k) => { if (k < metaCap(g, pos)) for (const q of t.requirements)
       add(q.attribute ?? idx[q.name], q.minimum, metaOf(g, pos) * (metaTierWorth(g, k + 1) - metaTierWorth(g, k))); });
   for (const [name, [w, target, floor]] of Object.entries(attrMetaFor(pos, h))) { add(idx[name], target, 2 * w); if (floor) add(idx[name], floor, 4 * w); }
   // The nearest frame (weight first, then an inch of wingspan) that opens each breakpoint, up to 30 lb either way.
@@ -906,6 +1019,30 @@ export function optimizeBodyFull(body, opts, { pinned = false } = {}) {
   }
   const best = pickArchetype(first, alts, body, opts);
   return best === first ? first : { ...best, archetypeTrick: true, naturalValue: first.value };
+}
+
+// Polishing a leading build (iterated local search): the greedy optimizer climbs one breakpoint at a time and can stop
+// at a different arrangement than the best for the tiers it reached; re-planning with those tiers held (what the
+// Builder's Re-optimize does) or solving exactly around the build often finds a better one.
+// type: an archetype index (re-plan as that archetype with every worthwhile tier the build holds kept), null (the same,
+// natural archetype) or 'mip' (exact plan within a few points of the build, same archetype; needs the solver loaded).
+export function polishMusts(r, opts) {
+  const o = { ...opts, position: r.body.position, height: r.body.height };
+  const must = { ...opts.mustHave };
+  for (const g of goals) {
+    if (worthOf(o, g) <= 0 || !inHeight(g, r.body.height)) continue;
+    const rank = Math.min(tierRank(badgeTier(g, r.final, r.body.height)), tierCapOf(o, g), opts.exclude?.[g.name] ?? 4);
+    if (rank > tierRank(must[g.name])) must[g.name] = tiers[rank - 1];
+  }
+  return must;
+}
+export const POLISH_RADIUS = 6;
+export function polishPlan(r, opts, type = null) {
+  if (type === 'mip') {
+    const x = mipBody(r.body, { ...opts, mipRadius: opts.mipRadius ?? POLISH_RADIUS }, r.playerType, r);
+    return x ?? { error: mipReady() ? 'No better exact plan.' : 'Exact planner not loaded.' };
+  }
+  return optimizeBody(r.body, { ...opts, mustHave: polishMusts(r, opts), seeds: 0, archetypes: false, ...(type != null ? { forceType: type } : {}) });
 }
 
 export const rankPlans = (results, opts) => {

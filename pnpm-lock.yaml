@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      highs:
+        specifier: 1.15.4
+        version: 1.15.4
       react:
         specifier: ^19.2.0
         version: 19.3.1
@@ -342,6 +345,10 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
+  highs@1.15.4:
+    resolution: {integrity: sha512-vsC03XHDqWAVrEFUt22h8e4CDDMb+LAFa0bycjPUq2kadRigK5pNLVIlwspKvMxxVtrr4NAucZHP/CAgigxiDQ==}
+    engines: {node: '>=18'}
+
   nanoid@3.3.20:
     resolution: {integrity: sha512-uKdg2G3GNCKQn9byYOpxbGqrT2fGO5KRt5J/8b3pok8rT6qxGWF6hxMyJiEYtAf+FVyYuD9hRaDqX5uPFYJ4ZQ==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
@@ -618,6 +625,8 @@ snapshots:
 
   fsevents@2.3.3:
     optional: true
+
+  highs@1.15.4: {}
 
   nanoid@3.3.20: {}
 

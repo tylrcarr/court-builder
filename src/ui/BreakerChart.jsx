@@ -28,7 +28,9 @@ export function breakerSavings(d) {
 }
 const fmt = x => x.toFixed(2);
 
-export function BreakerChart({ d, savings, focus = null }) {
+// onStep(i, count) (optional): the steps become buttons; clicking one sets that attribute's breakers to it (click the last
+// lit step again to take it off), so a result card can try other breakers and show what the rating would be.
+export function BreakerChart({ d, savings, focus = null, onStep }) {
   const sv = savings ?? breakerSavings(d);
   // The most Overall a breaker you haven't used yet would save (next step on each attribute).
   const next = sv && attributes.map(({ index: i }) => ({ i, gain: d.ladders[i][d.applied[i]] ?? 0, saved: sv[i][d.applied[i]] ?? 0 }))
@@ -47,10 +49,15 @@ export function BreakerChart({ d, savings, focus = null }) {
           <span className="cb-name">{name(key)}{big && <span className="cb-big" title={`5 breakers would add +${total(steps)} from this base`}> ★</span>}
             {used > 0 && <small className="cb-save" title="Overall these breakers save"> {fmt(used)} OVR</small>}</span>
           <span className="cb-val">{d.applied[i] ? <>{d.ratings[i]}<i>→</i></> : null}<b className={ratingTone(d.final[i])}>{d.final[i]}</b><small>/{d.caps[i]}</small></span>
-          <div className="breakers static">{steps.map((gain, step) => <span key={step}
-            className={step < d.applied[i] ? 'on' : gain ? '' : 'none'}
-            title={gain ? `Breaker ${step + 1}: +${gain}${sv ? ` · saves ${fmt(sv[i][step])} Overall` : ''}` : 'No gain left'}>
-            {gain ? '+' + gain : '·'}</span>)}</div>
+          <div className={'breakers' + (onStep ? '' : ' static')}>{steps.map((gain, step) => {
+            const reach = d.ratings[i] + total(steps.slice(0, step + 1));
+            const title = gain ? `Breaker ${step + 1}: +${gain} → ${reach}${sv ? ` · saves ${fmt(sv[i][step])} Overall` : ''}` : 'No gain left';
+            const cls = step < d.applied[i] ? 'on' : gain ? '' : 'none';
+            return onStep && gain
+              ? <button key={step} type="button" className={cls} title={title + (step + 1 === d.applied[i] ? ' · click to take it off' : ' · click to try')}
+                onClick={() => onStep(i, step + 1 === d.applied[i] ? step : step + 1)}>+{gain}</button>
+              : <span key={step} className={cls} title={title}>{gain ? '+' + gain : '·'}</span>;
+          })}</div>
         </div>;
       })}
     </div>)}</div>
@@ -59,17 +66,19 @@ export function BreakerChart({ d, savings, focus = null }) {
 
 // Collapsed by default, for result cards and the Builder.
 // open/onToggle/focus (optional): controlled by a card whose ratings strip opens the chart at one attribute.
-export function BreakerChartDetails({ d, className = 'plan-badges', open, onToggle, focus = null }) {
+export function BreakerChartDetails({ d, className = 'plan-badges', open, onToggle, focus = null, onStep, edited = false, onReset }) {
   const glitchy = attributes.filter(a => total(d.ladders[a.index]) >= BIG).length;
   const sv = useMemo(() => breakerSavings(d), [d]);
   const saved = sv ? attributes.reduce((s, { index: i }) => s + sv[i].slice(0, d.applied[i]).reduce((t, x) => t + x, 0), 0) : 0;
   const holders = useMemo(() => d.position ? archetypeHolders(d) : [], [d]);
   return <details className={className} {...(open != null ? { open } : {})}
     onToggle={onToggle ? e => onToggle(e.currentTarget.open) : undefined}>
-    <summary>Cap Breaker chart · archetype #{d.state.playerType} · {d.breakerCount} used{saved > 0 ? ` · saves ${saved.toFixed(1)} Overall` : ''}{glitchy ? ` · ${glitchy} ★` : ''}</summary>
+    <summary>Cap Breaker chart · archetype #{d.state.playerType} · {d.breakerCount} used{saved > 0 ? ` · saves ${saved.toFixed(1)} Overall` : ''}{glitchy ? ` · ${glitchy} ★` : ''}{edited ? ' · edited' : ''}</summary>
+    {onStep && <p className="small muted">Click a step to try it: the card's ratings, badges and meta update. {edited && onReset
+      && <button type="button" className="mini-btn" onClick={onReset}>Back to the plan</button>}</p>}
     {holders.length > 0 && <p className="small cb-hold">Held for the archetype, not for badges: {holders.map(h =>
       `${name(attributes[h.i].name)} ${h.rating} (${h.free ? `${h.free} to spare, ${h.free + 1}` : '1'} lower turns it into #${h.to})`).join(', ')}.
       Lower one past that and every Cap Breaker step changes (#{d.state.playerType}'s are why the breakers land where they do).</p>}
-    <BreakerChart d={d} savings={sv} focus={focus} />
+    <BreakerChart d={d} savings={sv} focus={focus} onStep={onStep} />
   </details>;
 }

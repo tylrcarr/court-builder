@@ -198,6 +198,27 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         plans[k] = { ...x, nudged: { from: n.r.body, opens: n.opens.filter(o => x.final[o.i] >= o.m) } };
       });
     }
+    // Polish the leaders: the greedy pass can stop at a worse arrangement than the best for what it reached (clicking
+    // Re-optimize on a result often found a better build). Each leader is re-planned with every worthwhile tier it holds
+    // kept, as its own and the likeliest other archetypes, plus an exact plan around it; the best replaces it.
+    {
+      const ok = plans.filter(r => r && !r.error);
+      const top = rankPlans([...ok], opts).slice(0, thorough ? 12 : 6);
+      const jobs = top.flatMap(r => {
+        const types = thorough ? Array.from({ length: playerTypeCount(r.body.height) }, (_, t) => t) : [r.playerType, ...archetypeCandidates(r, 2)];
+        return [null, 'mip', ...new Set(types)].map(type => ({ r, type }));
+      });
+      const slim = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType });
+      const polished = await pool.runJobs(jobs.map(j => ({ kind: 'polish', options: { plan: slim(j.r), opts, type: j.type } })),
+        progress('Polishing the leaders'));
+      if (!live()) return;
+      polished.forEach((x, j) => {
+        const { r } = jobs[j], k = plans.indexOf(r), cur = plans[k];
+        if (!x || x.error || !cur || archetypeScore(x, x.body, opts) <= archetypeScore(cur, cur.body, opts) + 0.05) return;
+        plans[k] = { ...x, nudged: cur.nudged, polished: { from: archetypeScore(r, r.body, opts), exact: !!x.exact },
+          ...(x.playerType !== r.playerType ? { archetypeTrick: true, naturalValue: r.value, naturalType: r.playerType } : {}) };
+      });
+    }
     // Same body dimensions + same ratings at different positions are one build (position only sets the name/meta group).
     const results = [];
     for (const r of rankPlans(plans.filter(r => r && !r.error), opts)) {
@@ -669,8 +690,13 @@ function AnimationChips({ prefs, setPrefs, mustHave, setMustHave }) {
 
 // One optimized plan: ratings, badges today vs. with future breakers, and the breaker order.
 export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onSave, variant, compareTo, mode = '5v5', openLabel = 'Open in Builder' }) {
-  const build = { body: p.body, base: p.manual, breakers: p.breakers, budget: p.budget, category: p.category, specialCount: p.specialCount };
-  const d = useMemo(() => derive(build), [p]);
+  // Breakers tried on the card (see BreakerChart onStep): null = the plan's own.
+  const [tried, setTried] = useState(null);
+  useEffect(() => setTried(null), [p]);
+  const build = { body: p.body, base: p.manual, breakers: tried ?? p.breakers, budget: p.budget, category: p.category, specialCount: p.specialCount };
+  const d = useMemo(() => derive(build), [p, tried]);
+  const onStep = (i, count) => setTried(t => { const next = (t ?? p.breakers).map((n, j) => j === i ? count : n);
+    return next.every((n, j) => n === p.breakers[j]) ? null : next; });
   const [chartOpen, setChartOpen] = useState(false), [focus, setFocus] = useState(null);
   const nowCount = (p.now ?? p.budget) + (p.specialCount ?? 0);
   const today = useMemo(() => p.today ? new Map(goals.map(b => [b.name, badgeTier(b, p.today, p.body.height)])) : null, [p]);
@@ -698,7 +724,8 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
 </h3><BodyLine body={p.body} also={p.alsoPositions ?? []} /></div>
       <div className="result-stats">
         <span title="Meta score: meta worth × tier (up to the meta's tier caps)">{meta.toFixed(1)}<small>meta</small></span>
-        <span title="Your picks: your importance × tier + feel + meta for badges left on Auto">{p.value.toFixed(1)}<small>picks</small></span>
+        <span title={tried ? 'Your picks score of the plan as optimized (the breakers you are trying change the other numbers)' : 'Your picks: your importance × tier + feel + meta for badges left on Auto'}
+          className={tried ? 'stale' : ''}>{p.value.toFixed(1)}<small>picks</small></span>
         <span title="Badge tiers unlocked">{d.unlocked.length}<small>badges</small></span>
         <span title="Cap Breakers planned">{d.breakerCount}<small>breakers</small></span>
       </div>
@@ -717,7 +744,7 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
           {s.gained.length > 0 && <small> {s.gained.map(g => `${goalLabel(goals.find(x => x.name === g.badge))}${goals.find(x => x.name === g.badge).tiers.length > 1 ? ' ' + tierShort(g.tier) : ''}`).join(', ')}</small>}</li>
       </React.Fragment>)}</ol>
     </details>}
-    <BreakerChartDetails d={d} open={chartOpen} onToggle={setChartOpen} focus={focus} />
+    <BreakerChartDetails d={d} open={chartOpen} onToggle={setChartOpen} focus={focus} onStep={onStep} edited={!!tried} onReset={() => setTried(null)} />
     <RatingReasons d={d} prefs={prefs} />
     <footer>
       <button className="primary" onClick={() => onOpen({ ...build, manual: p.manual })}>{openLabel}</button>

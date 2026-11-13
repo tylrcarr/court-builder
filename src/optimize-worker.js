@@ -1,10 +1,19 @@
 import { huntBuild, huntScreen } from './hunt.js';
-import { blockers, bodiesFor, minBreakers, optimizeAcross, optimizeBodyFull, screenBodies, tradeOffs } from './breakpoints.js';
+import { blockers, bodiesFor, minBreakers, optimizeAcross, optimizeBodyFull, polishPlan, screenBodies, tradeOffs } from './breakpoints.js';
+import { setMipSolver } from './mip.js';
+import loadHighs from 'highs';
+import highsWasm from 'highs/runtime?url';
+
+// The exact planner (HiGHS in WebAssembly) loads in the background; until it's ready (or if it can't load) the
+// optimizer runs without it.
+const solverReady = loadHighs({ locateFile: () => highsWasm }).then(setMipSolver).catch(() => null);
 
 // Jobs: 'screen' (which bodies are worth optimizing), 'body' (one body, all archetypes worth trying), 'blockers'
-// (why nothing fits), plus the single-thread 'across' and 'tradeoffs' used by the Builder.
-self.onmessage = ({ data }) => {
+// (why nothing fits), 'polish' (re-plan a leading build: same tiers kept, or exact plan around it), plus the
+// single-thread 'across' and 'tradeoffs' used by the Builder.
+self.onmessage = async ({ data }) => {
   const { kind, options } = data;
+  if (kind === 'polish') await solverReady;
   const onProgress = progress => self.postMessage({ progress });
   try {
     if (kind === 'screen') {
@@ -13,6 +22,8 @@ self.onmessage = ({ data }) => {
       self.postMessage({ result: r });
     } else if (kind === 'body') {
       self.postMessage({ result: optimizeBodyFull(options.body, options.opts, { pinned: options.pinned }) });
+    } else if (kind === 'polish') {
+      self.postMessage({ result: polishPlan(options.plan, options.opts, options.type) });
     } else if (kind === 'minBreakers') {
       self.postMessage({ result: minBreakers(options.positions, options.heights, options.opts) });
     } else if (kind === 'blockers') {
