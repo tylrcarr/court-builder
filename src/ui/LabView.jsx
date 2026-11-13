@@ -4,11 +4,14 @@ import { CONTINUOUS_WEIGHTS, IMPORTANCE, MAX_CAP_BREAKERS, SPECIALIZATIONS, arch
 import { META_CAPS, metaOf } from '../meta.js';
 import { BROAD_VARIANTS, VARIANTS } from '../variants.js';
 import { isAnimation } from '../animations.js';
-import { MODES, ROLES, applyRole, withMode } from '../roles.js';
+import { animationTypes, customJumper, findAnimation, groupsOf, outOfRange, searchAnimations, sizesText, wantKey, wantMinimums } from '../anim-wants.js';
+import { AnimationProfiles } from './AnimProfiles.jsx';
+import { requirementLabel } from '../unlocks.js';
+import { MODES, ROLES, ROLE_GROUPS, applyRole, withMode } from '../roles.js';
 import { derive, groups, tierShort } from '../derive.js';
 import { BreakerChartDetails } from './BreakerChart.jsx';
 import { RatingReasons } from './RatingReasons.jsx';
-import { BodyLine, HeightRange, MiniRatings, NumberInput, PositionToggles, Select, TierPill, disciplineColour, label,
+import { Archetype, BodyLine, HeightRange, MiniRatings, NumberInput, PositionToggles, Select, TierPill, disciplineColour, label,
   requirementText } from './common.jsx';
 
 export const defaultLab = () => ({
@@ -47,38 +50,60 @@ export function useOptimize() {
   return [state, run, cancel];
 }
 
-// Runs many optimizer jobs across a pool of workers (one per CPU core: the page itself only waits on them). runJobs resolves with results in job
-// order; cancel() stops everything.
-export function usePool() {
-  const workers = useRef([]);
-  const token = useRef(0);
-  const cancel = () => { workers.current.forEach(w => w.terminate()); workers.current = []; token.current++; };
-  useEffect(() => cancel, []);
+// Runs many optimizer jobs across a pool of workers (one per CPU core: the page itself only waits on them). runJobs resolves
+// with results in job order; cancel() stops everything in flight.
+// Workers are kept between the steps of a search (each new worker reloads the optimizer and HiGHS and starts cold, about
+// a second per body), then shut down after IDLE_MS without work, when the view unmounts, or when the page is hidden for
+// good. So nothing keeps running in the background once a search is done. Identical jobs within one run are answered
+// from memory.
+const IDLE_MS = 45000;
+const workerUrl = new URL('../optimize-worker.js', import.meta.url);
+export function usePool({ warm = false } = {}) {
+  const idle = useRef([]), busy = useRef(new Set()), warming = useRef(new Set()), timer = useRef(null), token = useRef(0), memo = useRef(new Map());
   const size = Math.max(2, navigator.hardwareConcurrency || 4);
+  const killIdle = () => { idle.current.forEach(w => w.terminate()); idle.current = []; };
+  const armIdle = () => { clearTimeout(timer.current); timer.current = setTimeout(() => { if (!busy.current.size) killIdle(); }, IDLE_MS); };
+  const take = () => idle.current.pop() ?? new Worker(workerUrl, { type: 'module' });
+  const release = w => { busy.current.delete(w); w.onmessage = null; w.onerror = null; idle.current.push(w); armIdle(); };
+  // Stop what's running: busy workers are terminated (they may be mid-job); idle ones stay warm.
+  const cancel = () => { busy.current.forEach(w => w.terminate()); busy.current.clear(); token.current++; memo.current.clear(); armIdle(); };
+  const shutdown = () => { cancel(); killIdle(); warming.current.forEach(w => w.terminate()); warming.current.clear(); clearTimeout(timer.current); };
+  useEffect(() => {
+    const gone = () => shutdown();
+    window.addEventListener('pagehide', gone);
+    // Pre-warm: load the optimizer and HiGHS in a few workers before the first click.
+    if (warm) Array.from({ length: Math.min(size, 4) }, () => {
+      const w = new Worker(workerUrl, { type: 'module' }); warming.current.add(w);
+      w.onmessage = () => { warming.current.delete(w); idle.current.push(w); w.onmessage = null; armIdle(); };
+      w.onerror = () => { warming.current.delete(w); w.terminate(); };
+      w.postMessage({ kind: 'warm' });
+    });
+    return () => { window.removeEventListener('pagehide', gone); shutdown(); };
+  }, []);
   const runJobs = (jobs, onDone) => new Promise(resolve => {
     const results = new Array(jobs.length), mine = token.current;
     let next = 0, done = 0;
     if (!jobs.length) return resolve(results);
-    const spawn = () => {
-      const w = new Worker(new URL('../optimize-worker.js', import.meta.url), { type: 'module' });
-      workers.current.push(w);
-      const feed = () => {
-        if (mine !== token.current) return;
-        if (next >= jobs.length) { w.terminate(); workers.current = workers.current.filter(x => x !== w); return; }
-        const k = next++;
+    const finish = (k, value) => { results[k] = value; done++; onDone?.(done, jobs.length); if (done === jobs.length) resolve(results); };
+    const keyOf = job => job.kind === 'body' || job.kind === 'polish' ? JSON.stringify(job) : null;
+    const feed = w => {
+      if (mine !== token.current) return;
+      while (next < jobs.length) {
+        const k = next++, key = keyOf(jobs[k]);
+        if (key && memo.current.has(key)) { finish(k, memo.current.get(key)); continue; }
         w.onmessage = ({ data }) => {
           if (data.progress) return;
-          results[k] = data.error ? { error: data.error } : data.result;
-          done++; onDone?.(done, jobs.length);
-          if (done === jobs.length) resolve(results);
-          feed();
+          const value = data.error ? { error: data.error } : data.result;
+          if (key && !data.error) memo.current.set(key, value);
+          finish(k, value); feed(w);
         };
-        w.onerror = () => { results[k] = { error: 'Worker failed' }; done++; onDone?.(done, jobs.length); if (done === jobs.length) resolve(results); feed(); };
+        w.onerror = () => { busy.current.delete(w); w.terminate(); finish(k, { error: 'Worker failed' }); if (next < jobs.length && mine === token.current) { const n = take(); busy.current.add(n); feed(n); } };
         w.postMessage(jobs[k]);
-      };
-      feed();
+        return;
+      }
+      release(w);
     };
-    for (let i = 0; i < Math.min(size, jobs.length); i++) spawn();
+    for (let i = 0; i < Math.min(size, jobs.length); i++) { const w = take(); busy.current.add(w); feed(w); }
   });
   return { runJobs, cancel, token, size };
 }
@@ -86,7 +111,9 @@ export function usePool() {
 // Lab prefs + config → optimizer options. Starting from a build adds its valued badge tiers as must-haves.
 export function optimizerOptions(rawPrefs, cfg) {
   const prefs = withMode(rawPrefs, cfg.mode ?? 'both');
-  const minimums = attributes.map(a => Math.max(25, prefs.minimums?.[a.name] ?? 25));
+  // Wanted animations (jumpers, dribble styles…) are hard minimums on the ratings they need.
+  const anim = wantMinimums(rawPrefs.wantAnims, prefs.minimums);
+  const minimums = attributes.map(a => Math.max(25, prefs.minimums?.[a.name] ?? 25, anim[a.name] ?? 25));
   const maximums = attributes.map(a => prefs.maximums?.[a.name] ?? 99);
   const mustHave = { ...cfg.mustHave };
   if (cfg.from && cfg.keepBadges) {
@@ -95,7 +122,7 @@ export function optimizerOptions(rawPrefs, cfg) {
       if (tiers.indexOf(mustHave[k]) < r - 1) mustHave[k] = tiers[r - 1];
   }
   return { values: prefs.values, caps: prefs.caps, continuous: prefs.continuous, notFeel: prefs.notFeel, continuousWeights: prefs.continuousWeights ?? {},
-    minimums, maximums, breakers: cfg.breakers, mustHave, mode: cfg.mode ?? 'both', metaRate: rawPrefs.metaRate ?? 1 };
+    minimums, maximums, breakers: cfg.breakers, mustHave, mode: cfg.mode ?? 'both', metaRate: rawPrefs.metaRate ?? 1, arms: rawPrefs.arms ?? null };
 }
 
 // Search results survive reloads and tab switches (a comprehensive search takes minutes): the last run is kept, and
@@ -106,9 +133,11 @@ const readResults = key => { try { return JSON.parse(localStorage.getItem(key));
 const writeResults = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
 const fromSaved = saved => saved?.result ? { running: false, result: saved.result, ms: saved.ms, restored: saved } : { running: false };
 
-export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches, setSearches, onOpen, onCompare, onSave, notify }) {
-  const pool = usePool();
+export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches, setSearches, onOpen, onCompare, onSave, notify, onStatus }) {
+  const pool = usePool({ warm: true });
   const [state, setState] = useState(() => fromSaved(readResults(RESULTS_KEY)));
+  // The search keeps running while you look at other tabs: the tab shows its clock.
+  useEffect(() => onStatus?.(state.running ? { running: true, started: state.started } : null), [state.running]);
   const cancel = () => { pool.cancel(); setState(s => ({ ...s, running: false })); };
   // A finished run is saved as "last results" (restored ones already are).
   useEffect(() => {
@@ -133,14 +162,17 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     pool.cancel();
     const mine = pool.token.current, started = performance.now();
     const live = () => mine === pool.token.current;
-    const progress = label => (done, total) => live() && setState(s => ({ ...s, progress: { label, done, total } }));
+    // Each stage owns a slice of the overall bar ([from, to] in %), filled as its jobs finish.
+    const progress = (label, [from, to]) => (done, total) => live() && setState(s => ({ ...s,
+      progress: { label, done, total, pct: from + (to - from) * (total ? done / total : 0) } }));
+    const stage = (label, pct) => live() && setState(s => ({ ...s, progress: { label, pct } }));
     let opts = optimizerOptions(prefs, cfg);
     const where = { positions: positionsUsed, heights: cfg.heights };
     // Comprehensive: twice the bodies through the full optimizer, and every archetype on each (not just the 3 likeliest).
     const thorough = !!cfg.thorough;
     const screen = o => pool.runJobs([{ kind: 'screen', options: { ...where, around: cfg.from ? cfg.from.body : null, opts: o,
       keep: (thorough ? MAX_BUILDS * 2 : MAX_BUILDS) + 4 } }]); // a few spare: twins (same body at two positions) merge below
-    setState({ running: true, progress: { label: 'Screening bodies' } });
+    setState({ running: true, started, progress: { label: 'Screening bodies', pct: 1 } });
     let [scr] = await screen(opts);
     if (!live()) return;
     if (scr.error) return setState({ running: false, error: scr.error });
@@ -168,14 +200,16 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     // Two passes, both spread over every worker: each body in its natural archetype, then the same body forced into
     // other archetypes (each its own job). An archetype wins on picks + meta (see pickArchetype).
     const natural = await pool.runJobs(scr.chosen.map(c => ({ kind: 'body', options: { body: c.body, pinned: c.pinned,
-      opts: { ...opts, archetypes: false } } })), progress(`Optimizing bodies (${pool.size} at a time)`));
+      opts: { ...opts, archetypes: false } } })), progress(`Optimizing bodies (${pool.size} at a time)`, [6, 40]));
     if (!live()) return;
+    stage('Trying other archetypes', 40);
     const alts = natural.flatMap((r, k) => !r || r.error ? [] : (thorough
       ? Array.from({ length: playerTypeCount(r.body.height) }, (_, t) => t).filter(t => t !== r.playerType)
       : archetypeCandidates(r, 3)).map(type => ({ k, type, mustHave: r.seed ? { ...opts.mustHave, [r.seed.name]: r.seed.tier } : opts.mustHave })));
     const forced = await pool.runJobs(alts.map(({ k, type, mustHave }) => ({ kind: 'body', options: { body: natural[k].body,
-      opts: { ...opts, mustHave, forceType: type, archetypes: false, seeds: 0 } } })),
-      progress(`Trying ${thorough ? 'every archetype' : 'other archetypes'} on each body`));
+      // beat: the natural plan's score. A forced plan trailing it by more than the take-back pass can add skips that pass.
+      opts: { ...opts, mustHave, forceType: type, archetypes: false, seeds: 0, beat: archetypeScore(natural[k], natural[k].body, opts) } } })),
+      progress(`Trying ${thorough ? 'every archetype' : 'other archetypes'} on each body`, [40, 66]));
     if (!live()) return;
     const plans = natural.map((first, k) => {
       if (!first || first.error) return first;
@@ -186,10 +220,14 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
     // Nudge the leaders' frames: a pound or an inch that opens a breakpoint they just miss (see nudgeBodies). Kept only
     // when the nudged build is really better (picks + meta, the same rule as archetypes).
     const leaders = rankPlans(plans.filter(r => r && !r.error), opts).slice(0, thorough ? Infinity : 8);
-    const nudges = leaders.flatMap(r => nudgeBodies(r, thorough ? 5 : 3).map(n => ({ r, ...n })));
+    // A preset that wants the longest arms (inside bigs) keeps them: no nudging to shorter ones.
+    const nudges = leaders.flatMap(r => nudgeBodies(r, thorough ? 5 : 3).map(n => ({ r, ...n })))
+      .filter(n => opts.arms !== 'max' || n.body.wingspan >= n.r.body.wingspan);
     if (nudges.length) {
-      const nudged = await pool.runJobs(nudges.map(n => ({ kind: 'body', options: { body: n.body, opts } })),
-        progress('Nudging weight and wingspan toward breakpoints'));
+      // The nudged body keeps the leader's archetype as the seed: no full archetype sweep (that's 40–70% of a search for the
+      // same results); the polish step below still tries other archetypes on whatever wins.
+      const nudged = await pool.runJobs(nudges.map(n => ({ kind: 'body', options: { body: n.body, opts: { ...opts, archetypes: false } } })),
+        progress('Nudging weight and wingspan toward breakpoints', [66, 78]));
       if (!live()) return;
       nudged.forEach((x, j) => {
         const n = nudges[j], k = plans.indexOf(n.r), cur = plans[k];
@@ -210,7 +248,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       });
       const slim = r => ({ body: r.body, base: r.base, manual: r.manual, breakers: r.breakers, final: r.final, playerType: r.playerType });
       const polished = await pool.runJobs(jobs.map(j => ({ kind: 'polish', options: { plan: slim(j.r), opts, type: j.type } })),
-        progress('Polishing the leaders'));
+        progress('Polishing the leaders', [78, 92]));
       if (!live()) return;
       polished.forEach((x, j) => {
         const { r } = jobs[j], k = plans.indexOf(r), cur = plans[k];
@@ -226,6 +264,14 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         && x.final.every((v, i) => v === r.final[i]));
       if (twin) twin.alsoPositions = [...(twin.alsoPositions ?? []), r.body.position];
       else results.push(r);
+    }
+    // Near-identical builds (same height and arms, ratings within a few points) are the same build at another weight:
+    // keep the best, note the other weights.
+    for (let k = results.length - 1; k > 0; k--) {
+      const r = results[k];
+      const twin = results.slice(0, k).find(x => x.body.height === r.body.height && x.body.wingspan === r.body.wingspan
+        && x.playerType === r.playerType && x.final.reduce((s, v, i) => s + Math.abs(v - r.final[i]), 0) <= 6);
+      if (twin) { twin.alsoWeights = [...(twin.alsoWeights ?? []), r.body.weight]; results.splice(k, 1); }
     }
     results.splice(thorough ? MAX_BUILDS * 2 : MAX_BUILDS);
     // Fewer bodies than result slots: fill the rest with other ways to spend the points on the best bodies — each
@@ -292,7 +338,7 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
       const out = await pool.runJobs(plansFor.flatMap(({ r, broad, extra }) => [
         ...broad.map(v => ({ body: r.body, o: v.apply(protect(r)) })), ...extra.map(e => ({ body: e.body ?? r.body, o: e.job(protect(r)) }))]
         .map(({ body, o }) => ({ kind: 'body', options: { body, opts: { ...o, archetypes: false, seeds: 0 } } }))),
-        progress('Finding other ways to spend the points'));
+        progress('Finding other ways to spend the points', [92, 100]));
       if (!live()) return;
       let at = 0;
       const perLeader = plansFor.map(({ r, broad, extra }) => {
@@ -357,10 +403,16 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         <button className="primary" onClick={() => saveSearch(true)}>Overwrite</button>
         <button onClick={() => setOverwrite(null)}>Cancel</button></div>}
 
-      <div className="roles"><span className="muted small">Start from a role:</span>
-        {ROLES.map(r => <button key={r.id} className={prefs.role === r.id ? 'on' : ''} aria-pressed={prefs.role === r.id}
-          title={r.blurb} onClick={() => pickRole(r)}>{r.label}</button>)}</div>
-      {role && <p className="muted small">{role.blurb} Everything not listed is ∅ — adjust below.</p>}
+      <div className="role-picker"><span className="eyebrow">Start from a preset</span>
+        <div className="role-groups">{ROLE_GROUPS.map(([g, title]) => <div key={g} className="role-group">
+          <h4>{title}</h4>
+          <div className="role-list">{ROLES.filter(r => r.group === g).map(r => <button key={r.id} className={'role-card' + (prefs.role === r.id ? ' on' : '')}
+            aria-pressed={prefs.role === r.id} title={r.blurb} onClick={() => pickRole(r)}>
+            <span className="role-icon" aria-hidden>{r.icon}</span>
+            <span className="role-text"><b>{r.label}</b><small>{r.positions.join('/')} · {feet(r.heights[0])}–{feet(r.heights[1])}{r.arms === 'max' ? ' · long arms' : ''}</small></span>
+          </button>)}</div></div>)}</div>
+        {role && <p className="role-blurb"><span aria-hidden>{role.icon}</span> <b>{role.label}:</b> {role.blurb} <span className="muted">Badges not listed are ∅ — adjust below.</span></p>}
+      </div>
       {searches.length > 0 && <div className="saved-searches"><span className="muted small">Saved:</span>
         {searches.map(s => <span key={s.id} className="chip">
           <button className="linkish" title={s.hasResults ? 'Loads its settings and the results it was saved with' : undefined} onClick={() => {
@@ -404,17 +456,24 @@ export default function LabView({ build, prefs, setPrefs, cfg, setCfg, searches,
         <div className="config-block full">
           <BadgeImportance prefs={prefs} setPrefs={setPrefs} mustHave={cfg.mustHave}
             setMustHave={fn => set(c => ({ mustHave: fn(c.mustHave) }))} />
-          <AnimationChips prefs={prefs} setPrefs={setPrefs} mustHave={cfg.mustHave}
-            setMustHave={fn => set(c => ({ mustHave: fn(c.mustHave) }))} />
+          <AnimationWants prefs={prefs} setPrefs={setPrefs} mustHave={cfg.mustHave} heights={cfg.heights}
+            setMustHave={fn => set(c => ({ mustHave: fn(c.mustHave) }))} setHeights={heights => set({ heights })} notify={notify} />
         </div>
       </div>
       <div className="run-row">
         <button className="primary big" disabled={state.running} onClick={start}>{state.running ? 'Optimizing…' : 'Find builds'}</button>
         <label className="check" title="Twice as many bodies through the full optimizer, and every archetype tried on each one. Slower (a few minutes), but it finds the builds where an unusual archetype makes Cap Breakers pay off.">
           <input type="checkbox" checked={!!cfg.thorough} disabled={state.running} onChange={e => set({ thorough: e.target.checked })} />Comprehensive search</label>
+        {cfg.thorough && <p className="warn small thorough-warn">⚠ Comprehensive search is <b>3–15× slower</b> (often 10+ minutes) and keeps every CPU core busy.
+          In tests it found the same #1 build as the normal search every time, with only small gains further down the list. Use it when you're
+          about to commit to a build, not while you're exploring.</p>}
         {state.running && <button onClick={cancel}>Cancel</button>}
-        {state.running && <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
-          {state.progress?.total ? ` ${state.progress.done}/${state.progress.total}` : ''}</p>}
+        {state.running && <div className="search-progress">
+          <p className="status-line"><span className="spinner" />{state.progress?.label ?? 'Starting'}…
+            {state.progress?.total ? ` ${state.progress.done}/${state.progress.total}` : ''} <Elapsed started={state.started} />
+            <b className="pct">{Math.round(state.progress?.pct ?? 0)}%</b></p>
+          <div className="progress-track" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(state.progress?.pct ?? 0)}>
+            <div className="progress-fill" style={{ width: `${Math.max(1, state.progress?.pct ?? 0)}%` }} /></div></div>}
         {!state.running && state.error && <p className="status-line warn">{state.error}</p>}
         {!state.running && state.restored && <p className="status-line muted small">Saved results from {new Date(state.restored.savedAt).toLocaleString()}
           {state.restored.thorough ? ' (comprehensive)' : ''} — run Find builds to refresh.
@@ -676,15 +735,107 @@ it says the badge stops paying." onChange={e => setCap(Number(e.target.value))}>
   </div>;
 }
 
-// Animations: same rows as badges, in their own collapsible section.
-function AnimationChips({ prefs, setPrefs, mustHave, setMustHave }) {
-  const on = animationGoals.filter(g => mustHave[g.name] || valueOf(prefs, g) > 0).length;
-  return <details className="animations" open={on > 0}>
-    <summary><h3>Animations {on > 0 && <span className="count">{on}</span>}</h3></summary>
-    <p className="muted small">Contact dunks and alley-oops (nba2klab table). Other animations (jumper bases, dribble styles) are best handled with a Min
-      on the attribute.</p>
-    <div className="pick-grid">{animationGoals.map(g => <GoalRow key={g.name} goal={g} prefs={prefs} setPrefs={setPrefs}
-      mustHave={mustHave} setMustHave={setMustHave} />)}</div>
+// Seconds since start, ticking.
+export function Elapsed({ started }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, []);
+  return started ? <b className="elapsed">{Math.floor((performance.now() - started) / 1000)}s</b> : null;
+}
+
+// Contact dunks / alley-oops are levels of the same rating: pick the highest you need and every result has it (the lower ones
+// come with it). Smalls-only and bigs-only levels show when your height range includes them.
+const LADDERS = [
+  { id: 'dunks', label: 'Contact dunks', levels: [['small_contact_off_two', 'Small', 'S'], ['pro_contact_off_two', 'Pro'], ['pro_contact_off_one', 'Pro off one'],
+    ['small_contact_off_one', 'Small off one', 'S'], ['elite_contact_off_two', 'Elite'], ['elite_contact_off_one', 'Elite off one']] },
+  { id: 'oops', label: 'Alley-oops', levels: [['pro_contact_oop', 'Pro'], ['small_contact_oop', 'Small', 'S'], ['elite_contact_oop', 'Elite']] },
+  { id: 'bigman', label: 'Bigman dunks', levels: [['pro_bigman_contact', 'Pro'], ['bigman_contact_oop', 'Oop'], ['elite_bigman_contact', 'Elite']] },
+];
+const reqShort = g => g.tiers[0].requirements.map(r => `${({ driving_dunk: 'DNK', standing_dunk: 'SDK', vertical: 'VRT' })[r.name]} ${r.minimum}`).join(' · ');
+function DunkLadders({ prefs, setPrefs, mustHave, setMustHave, heights }) {
+  const [detail, setDetail] = useState(false);
+  const shown = (g, only) => g.height_inches[0] <= heights[1] && g.height_inches[1] >= heights[0];
+  return <div className="ladders">
+    {LADDERS.map(l => {
+      const levels = l.levels.map(([k, text, only]) => ({ g: byName[k], text, only })).filter(x => x.g && shown(x.g));
+      if (!levels.length) return null;
+      const on = levels.findLast(x => mustHave[x.g.name])?.g.name ?? '';
+      const pick = key => setMustHave(m => { const next = { ...m }; for (const x of levels) delete next[x.g.name]; if (key) next[key] = 'bronze'; return next; });
+      return <div key={l.id} className="ladder"><span className="ladder-name">{l.label}</span>
+        <div className="seg" role="group" aria-label={l.label}>
+          <button className={!on ? 'on' : ''} aria-pressed={!on} onClick={() => pick('')}>Any</button>
+          {levels.map(x => <button key={x.g.name} className={on === x.g.name ? 'on' : ''} aria-pressed={on === x.g.name}
+            title={`${goalLabel(x.g)}: ${reqShort(x.g)}${x.only ? ' (5′9″–6′4″ only)' : ''}. Every result must have it.`} onClick={() => pick(on === x.g.name ? '' : x.g.name)}>
+            <b>{x.text}</b><small>{reqShort(x.g)}</small></button>)}
+        </div></div>;
+    })}
+    <button className="linkish small" onClick={() => setDetail(!detail)}>{detail ? 'Hide' : 'Show'} per-package importance</button>
+    {detail && <div className="pick-grid">{animationGoals.map(g => <GoalRow key={g.name} goal={g} prefs={prefs} setPrefs={setPrefs}
+      mustHave={mustHave} setMustHave={setMustHave} />)}</div>}
+  </div>;
+}
+
+// Animations you want, by search: each one becomes a requirement (the ratings it needs are minimums). Saved profiles
+// (e.g. "Bigs", "Guards") hold a set of animations and, optionally, attribute minimums.
+function AnimationWants({ prefs, setPrefs, mustHave, setMustHave, heights, notify }) {
+  const wants = prefs.wantAnims ?? [];
+  const keys = wants.map(wantKey);
+  const [query, setQuery] = useState('');
+  const [type, setType] = useState('');
+  const [group, setGroup] = useState('');
+  const [active, setActive] = useState(0);
+  const [focus, setFocus] = useState(false);
+  const [jumper, setJumper] = useState(null); // custom jumper form
+  const hits = useMemo(() => searchAnimations(query, { limit: type || group ? 60 : 12, tab: type, group }), [query, type, group]);
+  const add = a => { if (!keys.includes(a.key)) setPrefs(p => ({ ...p, wantAnims: [...(p.wantAnims ?? []), a.custom ? a : a.key] })); setQuery(''); setActive(0); };
+  const remove = key => setPrefs(p => ({ ...p, wantAnims: (p.wantAnims ?? []).filter(k => wantKey(k) !== key) }));
+  const mins = wantMinimums(wants, {});
+  const away = outOfRange(wants, heights);
+  const dunkOn = animationGoals.filter(g => mustHave[g.name]).length;
+  const count = wants.length + dunkOn;
+  const showList = hits.length > 0 && (focus || query);
+  return <details className="animations" open={count > 0 || undefined}>
+    <summary><h3>Animations {count > 0 && <span className="count">{count}</span>}</h3></summary>
+    <DunkLadders prefs={prefs} setPrefs={setPrefs} mustHave={mustHave} setMustHave={setMustHave} heights={heights} />
+    <h4 className="sub-head">Any animation</h4>
+    <p className="muted small">Search HQ's glossary or narrow it by type and group, then add what you want: the Lab only shows builds that unlock it.</p>
+    <div className="picker-tools labelled anim-filters">
+      <label className="field compact"><span>Type</span><select value={type} onChange={e => { setType(e.target.value); setGroup(''); }}>
+        <option value="">All types</option>{animationTypes.map(t => <option key={t} value={t}>{t}</option>)}</select></label>
+      <label className="field compact"><span>Group</span><select value={group} onChange={e => setGroup(e.target.value)}>
+        <option value="">All groups</option>{groupsOf(type).map(g => <option key={g} value={g}>{g}</option>)}</select></label>
+      <div className="combo field compact grow"><span>Find</span>
+        <input type="search" role="combobox" aria-expanded={showList} placeholder={type || group ? 'Filter by player name…' : 'Player or animation: “curry”, “sig size-up”…'}
+          value={query} onChange={e => { setQuery(e.target.value); setActive(0); }} onFocus={() => setFocus(true)} onBlur={() => setFocus(false)}
+          onKeyDown={e => {
+            if (e.key === 'ArrowDown') { e.preventDefault(); setActive(a => Math.min(hits.length - 1, a + 1)); }
+            if (e.key === 'ArrowUp') { e.preventDefault(); setActive(a => Math.max(0, a - 1)); }
+            if (e.key === 'Enter' && hits[active]) { e.preventDefault(); add(hits[active]); }
+            if (e.key === 'Escape') { setQuery(''); e.currentTarget.blur(); }
+          }} />
+        {showList && <ul role="listbox" className="combo-list">{hits.map((a, k) => <li key={a.key} role="option" aria-selected={k === active}
+          className={(k === active ? 'active' : '') + (keys.includes(a.key) ? ' on' : '')} onMouseEnter={() => setActive(k)} onMouseDown={e => { e.preventDefault(); add(a); }}>
+          <b>{a.name}</b> <span className="muted">{a.group}</span><small>{requirementLabel(a, name)} · {sizesText(a.sizes)}</small></li>)}</ul>}
+      </div>
+      <button className="mini-btn" onClick={() => setJumper(jumper ? null : { base: '', r1: '', r2: '', blend: 50, req: 80 })}>＋ Custom jumper</button>
+    </div>
+    {jumper && <div className="custom-jumper">
+      <p className="muted small">Your custom jump shot's requirement as the game shows it (2K hasn't published how the upper releases and blend set it, so
+        enter the number from the jumpshot creator). It's a three point <i>or</i> mid-range minimum, like every jumper.</p>
+      <div className="picker-tools labelled">
+        <label className="field compact"><span>Base</span><input type="text" placeholder="e.g. WNBA 7" value={jumper.base} onChange={e => setJumper({ ...jumper, base: e.target.value })} /></label>
+        <label className="field compact"><span>Upper release 1</span><input type="text" placeholder="e.g. Beluba" value={jumper.r1} onChange={e => setJumper({ ...jumper, r1: e.target.value })} /></label>
+        <label className="field compact"><span>Upper release 2</span><input type="text" placeholder="e.g. Bassey" value={jumper.r2} onChange={e => setJumper({ ...jumper, r2: e.target.value })} /></label>
+        <label className="field compact narrow"><span>Blend (release 1 %)</span><NumberInput title="Blend" min={0} max={100} value={jumper.blend} onChange={v => setJumper({ ...jumper, blend: v })} /></label>
+        <label className="field compact narrow"><span>Needs (3PT or mid)</span><NumberInput title="Requirement" min={25} max={99} value={jumper.req} onChange={v => setJumper({ ...jumper, req: v })} /></label>
+        <button className="mini-btn primary" onClick={() => { add(customJumper(jumper)); setJumper(null); notify('Custom jumper added as a requirement.'); }}>Add</button>
+      </div></div>}
+    {wants.length > 0 && <div className="chips want-chips">{wants.map(w => { const a = findAnimation(w); return a && <span key={a.key} className="chip"
+      title={`${a.tab} · ${sizesText(a.sizes)}`}><b>{a.name}</b> <span className="muted small">{a.group} · {requirementLabel(a, name)}</span>
+      <button className="linkish" aria-label={`Remove ${a.name}`} onClick={() => remove(a.key)}>×</button></span>; })}</div>}
+    {wants.length > 0 && <p className="muted small">Adds minimums: {Object.entries(mins).map(([k, v]) => `${name(k)} ${v}`).join(', ')}
+      {' '}(for “either” requirements: the one you already need, or the cheaper).</p>}
+    {away.length > 0 && <p className="warn small">{away.map(a => a.name).join(', ')}: not available at your heights ({sizesText(away[0].sizes)} only).</p>}
+    <AnimationProfiles prefs={prefs} setPrefs={setPrefs} mustHave={mustHave} setMustHave={setMustHave} notify={notify} />
   </details>;
 }
 
@@ -721,7 +872,8 @@ export function PlanCard({ plan: p, rank, prefs, current, onOpen, onCompare, onS
     <header>
       {!variant && <div className="rank">{rank}</div>}
       <div><h3>{d.finalName ?? 'Unnamed build'}{current && <span className="chip">starting body</span>}
-</h3><BodyLine body={p.body} also={p.alsoPositions ?? []} /></div>
+</h3><BodyLine body={p.body} also={p.alsoPositions ?? []} />
+        {p.alsoWeights?.length > 0 && <div className="small muted" title="The same build (within a few rating points) also works at these weights">Also {[...new Set(p.alsoWeights)].sort((x, y) => x - y).join(', ')} lb</div>}</div>
       <div className="result-stats">
         <span title="Meta score: meta worth × tier (up to the meta's tier caps)">{meta.toFixed(1)}<small>meta</small></span>
         <span title={tried ? 'Your picks score of the plan as optimized (the breakers you are trying change the other numbers)' : 'Your picks: your importance × tier + feel + meta for badges left on Auto'}

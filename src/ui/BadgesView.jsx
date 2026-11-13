@@ -47,16 +47,22 @@ export default function BadgesView({ build, onFindWith }) {
         <p className="muted">Official 2K HQ tier requirements (cross-checked with NBA2KLab) for your {feet(h)} {build.body.position}.
           Final ratings after Cap Breakers count toward badges.</p></div>
         <div className="head-stats"><span><b>{d.unlocked.length}</b> unlocked</span><span><b>{totalTokens}</b> tokens to equip all</span></div></div>
-      <div className="picker-tools">
-        <input type="search" placeholder="Search badges or attributes…" value={query} onChange={e => setQuery(e.target.value)} />
-        <select value={attr} onChange={e => setAttr(e.target.value)} aria-label="Attribute">
-          <option value="">Any attribute</option>{attributes.map(a => <option key={a.name} value={a.name}>{name(a.name)}</option>)}</select>
-        <select value={discipline} onChange={e => setDiscipline(e.target.value)} aria-label="Category">
-          <option value="">All categories</option>{[...new Set(badges.map(b => b.discipline))].map(x => <option key={x} value={x}>{name(x)}</option>)}</select>
-        <select value={status} onChange={e => setStatus(e.target.value)} aria-label="Status">
-          <option value="all">All</option><option value="unlocked">Unlocked</option><option value="locked">Locked (eligible)</option>
-          <option value="height">Height restricted</option></select>
+      <div className="picker-tools labelled">
+        <label className="field compact grow"><span>Search</span>
+          <input type="search" placeholder="Badge or attribute name…" value={query} onChange={e => setQuery(e.target.value)} /></label>
+        <label className="field compact" title="Only badges that need this rating at some tier, sorted by the lowest requirement on it">
+          <span>Needs rating</span><select value={attr} onChange={e => setAttr(e.target.value)}>
+          <option value="">Any rating</option>{attributes.map(a => <option key={a.name} value={a.name}>{name(a.name)}</option>)}</select></label>
+        <label className="field compact" title="Badge category (the discipline it belongs to)"><span>Category</span>
+          <select value={discipline} onChange={e => setDiscipline(e.target.value)}>
+          <option value="">All categories</option>{[...new Set(badges.map(b => b.discipline))].map(x => <option key={x} value={x}>{name(x)}</option>)}</select></label>
+        <label className="field compact" title="Against the build in the Builder"><span>For your build</span>
+          <select value={status} onChange={e => setStatus(e.target.value)}>
+          <option value="all">All badges</option><option value="unlocked">Unlocked</option><option value="locked">Not yet (in your height)</option>
+          <option value="height">Not at your height</option></select></label>
       </div>
+      <p className="muted small">Each tier lists the ratings it needs (final, after Cap Breakers); <span className="good-text">green</span> = your build meets it.
+        Click a badge for token costs and how much of the Overall budget it takes.</p>
       <div className="badge-table" role="table">
         <div className="bt-head" role="row"><span>Badge</span><span>Height</span>{tiers.map(t => <span key={t}><TierPill tier={t} small /></span>)}<span>Yours</span></div>
         {rows.map(({ b, tier, eligible }) => <React.Fragment key={b.badge}>
@@ -64,7 +70,7 @@ export default function BadgesView({ build, onFindWith }) {
             onClick={() => setOpen(open === b.badge ? null : b.badge)}>
             <span className="bt-name"><i style={{ background: disciplineColour(b.discipline) }} />{label(b.name)}</span>
             <span>{feet(b.height_inches[0])}–{feet(b.height_inches[1])}</span>
-            {tiers.map(t => <span key={t} className={'req' + (tiers.indexOf(tier) >= tiers.indexOf(t) ? ' met' : '')}>{requirementText(b, t)}</span>)}
+            {tiers.map(t => <ReqCell key={t} b={b} tier={t} met={tiers.indexOf(tier) >= tiers.indexOf(t)} attr={attr} final={d.final} />)}
             <span>{eligible ? <TierPill tier={tier} /> : <em className="muted">Too {h < b.height_inches[0] ? 'short' : 'tall'}</em>}</span>
           </button>
           {open === b.badge && <div className="bt-detail">
@@ -82,4 +88,13 @@ export default function BadgesView({ build, onFindWith }) {
       </div>
     </section>
   </div>;
+}
+
+// One tier's requirements as aligned lines: rating name left, minimum right (same column all the way down).
+function ReqCell({ b, tier, met, attr, final }) {
+  const reqs = b.tiers.find(x => x.tier === tier)?.requirements ?? [];
+  if (!reqs.length) return <span className="req muted">–</span>;
+  return <span className={'req' + (met ? ' met' : '')}>{reqs.map((r, i) => <span key={i} className={'req-ln' + (r.name === attr ? ' hl' : '')
+    + (!met && final[r.attribute] >= r.minimum ? ' ok' : '')}>
+    <span className="req-n">{i > 0 && reqs[i - 1].operator_to_next === 'OR' ? <i>or </i> : null}{name(r.name)}</span><b>{r.minimum}</b></span>)}</span>;
 }

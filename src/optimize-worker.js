@@ -13,7 +13,8 @@ const solverReady = loadHighs({ locateFile: () => highsWasm }).then(setMipSolver
 // single-thread 'across' and 'tradeoffs' used by the Builder.
 self.onmessage = async ({ data }) => {
   const { kind, options } = data;
-  if (kind === 'polish') await solverReady;
+  if (kind === 'polish' || kind === 'warm') await solverReady;
+  if (kind === 'warm') return self.postMessage({ result: true });
   const onProgress = progress => self.postMessage({ progress });
   try {
     if (kind === 'screen') {

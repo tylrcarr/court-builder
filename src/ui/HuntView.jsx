@@ -3,7 +3,7 @@ import { attributes, feet, positions } from '../engine.js';
 import { bodiesFor } from '../breakpoints.js';
 import { bestFrame, capsAcross, hintsAcross, huntScore, perBreaker, pickCandidates, rangeBodies, shortOf, tableAcross, targetsFirst } from '../hunt.js';
 import { PlanCard, optimizerOptions, usePool } from './LabView.jsx';
-import { HeightRange, NumberInput, Select, label } from './common.jsx';
+import { Archetype, HeightRange, NumberInput, Select, label } from './common.jsx';
 import { groups } from '../derive.js';
 import { name } from '../engine.js';
 
@@ -233,7 +233,7 @@ export default function HuntView({ prefs, labCfg, onOpen, onCompare, onSave, not
           ['later', `Needs more (${all.filter(r => whenOf(r) === 'later').length})`]].map(([id, text]) =>
           <button key={id} className={show === id ? 'on' : ''} aria-pressed={show === id} onClick={() => setShow(id)}>{text}</button>)}</div></div>
       <div className="results">{results.map((r, k) => <div key={k} className="hunt-result">
-        <div className="hunt-strip"><span className="chip">Archetype #{r.playerType}</span>
+        <div className="hunt-strip"><span className="chip"><Archetype height={r.body.height} type={r.playerType} /></span>
           {shownPicks.map(i => { const goal = r.hunt?.goal?.[i], short_ = goal != null && r.final[i] < goal;
             return <span key={i} className={'chip' + (short_ ? ' miss' : '')} title={`${r.breakers[i]} Cap Breakers${goal != null ? ` · target ${goal}` : ''}`}>
             {short(i)} {r.breakers[i] ? <>{r.base[i]} → <b>{r.final[i]}</b> (+{r.final[i] - r.base[i]}, {r.breakers[i]}×)</>

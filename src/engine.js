@@ -103,6 +103,47 @@ export function raiseResolved(resolved, height, i, value, caps = null) {
   }
   return r;
 }
+// raiseResolved(resolved, height, i, value) (no caps) followed by capping, without allocating: writes the base ratings that
+// change (min(new resolved, cap) ≠ base) as ascending indices into at[] with their new values in to[], returns how many.
+// The new resolved vector is left in RAISED (valid until the next call). For scoring trials in an inner loop (scoresAfter).
+export const RAISED = new Int32Array(64);
+const raiseStack = [];
+export function raiseTrial(resolved, base, caps, height, i, value, at, to) {
+  const r = RAISED, from = linksFrom(height), n = resolved.length;
+  for (let k = 0; k < n; k++) r[k] = resolved[k];
+  r[i] = value;
+  raiseStack.length = 0; raiseStack.push(i);
+  while (raiseStack.length) {
+    const s = raiseStack.pop(), list = from[s];
+    for (let k = 0; k < list.length; k += 2) {
+      const g = list[k], m = r[s] - list[k + 1];
+      if (r[g] < m) { r[g] = m; raiseStack.push(g); }
+    }
+  }
+  let c = 0;
+  for (let k = 0; k < n; k++) { const v = r[k] < caps[k] ? r[k] : caps[k]; if (v !== base[k]) { at[c] = k; to[c] = v; c++; } }
+  return c;
+}
+// resolveLinks into a scratch vector (worklist propagation: the same least fixpoint as resolveLinks's repeated passes,
+// since every link only raises a target toward a fixed minimum), with one rating replaced: manual[i] → value.
+// Then writes the base ratings that change against `base` (min(resolved, cap) ≠ base) into at[] / to[] like raiseTrial.
+const RESOLVED = new Float64Array(64), resolveStack = [];
+export function resolveTrial(manual, i, value, height, base, caps, at, to) {
+  const r = RESOLVED, from = linksFrom(height), n = manual.length;
+  resolveStack.length = 0;
+  for (let k = 0; k < n; k++) { r[k] = manual[k]; resolveStack.push(k); }
+  r[i] = value;
+  while (resolveStack.length) {
+    const s = resolveStack.pop(), list = from[s];
+    for (let k = 0; k < list.length; k += 2) {
+      const g = list[k], m = r[s] - list[k + 1];
+      if (r[g] < m) { r[g] = m; resolveStack.push(g); }
+    }
+  }
+  let c = 0;
+  for (let k = 0; k < n; k++) { const v = r[k] < caps[k] ? r[k] : caps[k]; if (v !== base[k]) { at[c] = k; to[c] = v; c++; } }
+  return c;
+}
 const scaleTable = data.scales.map(s => Float64Array.from({ length: 100 }, (_, r) => s[r] ?? 1));
 const scaleOf = (i, r) => r >= 0 && r < 100 && Number.isInteger(r) ? scaleTable[i][r] : data.scales[i][r] ?? 1;
 const maxWeightCache = new Map();
@@ -194,6 +235,30 @@ export function sumsWith(sums, from, to, height) {
       out[2 * t + 1] += w * sb - w * sa;
     }
   }
+  return out;
+}
+// The planners' innermost loop: the Overall of every archetype after changing a few ratings, without building the new sums.
+// Exactly sumsWith + scoreOfSums + scoreAsOfSums (same terms, added in the same order, so the same floating-point result)
+// for changes at ascending indices at[0..n) to values to[0..n) (from = the ratings `sums` was built on).
+// Writes { score, playerType, as: the score of `type` } into out.
+export function scoresAfter(sums, from, at, to, n, height, type, out) {
+  const all = data.weights[height], T = all.length;
+  const [[low, high], [start, end]] = data.lerp[height - 64];
+  let best = -Infinity, playerType = 0, as = 0;
+  for (let t = 0; t < T; t++) {
+    const w = all[t];
+    let num = sums[2 * t], den = sums[2 * t + 1];
+    for (let k = 0; k < n; k++) {
+      const i = at[k], a = from[i], b = to[k], wi = w[i];
+      const sa = scaleOf(i, a), sb = scaleOf(i, b);
+      num += wi * sb * b - wi * sa * a;
+      den += wi * sb - wi * sa;
+    }
+    const score = start + (num / den - low) * (end - start) / (high - low);
+    if (score > best + 1e-10) { best = score; playerType = t; }
+    if (t === type) as = score;
+  }
+  out.score = best; out.playerType = playerType; out.as = as;
   return out;
 }
 export function scoreOfSums(sums, height) {

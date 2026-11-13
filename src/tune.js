@@ -65,16 +65,19 @@ export function maximizeBadges(build, locks, { rounds = 40, within = 10 } = {}) 
 
 // Lower every non-feel attribute to its live breakpoint (keeping every valued badge tier, the Cap Breakers
 // already placed and the specialization), then put the freed budget into feel attributes.
-export function trimDeadWeight(build, userPrefs, locks = attributes.map(() => false)) {
+export function trimDeadWeight(build, userPrefs, locks = attributes.map(() => false), extraFloors = null) {
   const { body } = build;
   const h = body.height;
   const d = derive(build);
   const prefs = { ...userPrefs, continuous: feelFor(userPrefs, body.position, d.final) };
   const { floors: badgeFloors } = deadWeight(d.final, h, prefs, build.category, d.ratings);
   // Attributes carrying Cap Breakers are deliberate: keep them where they are.
-  const floors = badgeFloors.map((f, i) => d.applied[i] > 0 ? d.final[i] : f);
+  const floors = badgeFloors.map((f, i) => d.applied[i] > 0 ? d.final[i] : Math.max(f, Math.min(d.final[i], extraFloors?.[i] ?? 25)));
   const spec = build.category && d.specOk ? specMinimums(build.category) : null;
-  const ok = dd => dd.final.every((v, j) => v >= floors[j]) && (!spec || dd.ratings.every((v, j) => v >= spec[j]));
+  // Locked ratings never move (not even through a linked minimum), and the archetype stays: a different archetype changes
+  // every Cap Breaker step, so trimming one rating could quietly cost others.
+  const ok = dd => dd.final.every((v, j) => v >= floors[j]) && (!spec || dd.ratings.every((v, j) => v >= spec[j]))
+    && dd.state.playerType === d.state.playerType && dd.ratings.every((v, j) => !locks[j] || v === d.ratings[j]);
   let base = [...build.base];
   const before = d.state.score;
   for (let i = 0; i < base.length; i++) {

@@ -1,3 +1,4 @@
+import { attributes } from './engine.js';
 // "Meta" badge worth for NBA 2K27 (0 = not worth points … 3 = top of the meta), used to steer leftover Overall and
 // Cap Breakers once your musts, minimums and picks are covered, and for the meta score on results.
 // Sources (Nov 2026): Operation Sports "best badges in NBA 2K27, no matter your build" and MMOexp's 2K27 badge tier
@@ -6,7 +7,7 @@
 // Flash, Float Game, Unpluckable) the badge sits in the middle. Edit freely: it's a judgement call, not game data.
 export const META = {
   // Shooting
-  set_and_fire: 3, arc_cadence: 3, deadeye: 2, limitless_range: 2, smooth_operator: 1, mini_marksman: 1,
+  set_and_fire: 3, arc_cadence: 2.25, deadeye: 2, limitless_range: 2, smooth_operator: 1, mini_marksman: 1,
   quick_trigger: 0.5, static_middy: 1, post_fade_phenom: 1,
   // Finishing
   posterizer: 3, layup_mixmaster: 1, rise_up: 0.25, paint_prodigy: 0.25, float_game: 0.25, physical_finisher: 1,
@@ -33,8 +34,14 @@ export const META = {
 // for. Possession Closer works the same way for bigs: gold (95 defensive rebound) is the board that matters, far above
 // 90 (a 90-board center isn't close to a 95 one).
 // Post Fade Phenom only starts to matter at silver, and even then it's low-normal: worth it when it costs next to nothing.
+// Set and Fire: silver (78) is the floor everyone has; gold (89) is the shooting breakpoint that matters — an 86 three is a
+// stop on the way, not the goal (86 and 89 are the two marks). Lightning Launch: gold (86 speed with ball) is what you
+// aim for, silver (75) is still real value; bronze is nothing. Paint Patroller ("rim protection"): silver (~84 block,
+// 71+ interior) is the big one, gold (93 block) the goal if it fits. Crasher: silver (80) is fine, gold (93) is what a
+// real inside big has.
 export const META_TIER = { posterizer: [0, 0.5, 1.25, 3.5, 3.75], possession_closer: [0, 0.5, 1, 4, 4.25],
-  post_fade_phenom: [0, 0, 0.6, 0.9, 1.1] };
+  post_fade_phenom: [0, 0, 0.6, 0.9, 1.1], set_and_fire: [0, 0.25, 1.75, 3.75, 4.25], lightning_launch: [0, 0.25, 2, 3.75, 4],
+  paint_patroller: [0, 0.75, 2.5, 3.5, 3.75], crasher: [0, 0.5, 1.75, 3.75, 4] };
 // A first tier is worth a bit more than later steps: a bronze can be Synergy-boosted (+1) to silver.
 export const BRONZE_BONUS = 0.5;
 export const metaTierWorth = (goal, rank) => META_TIER[goal.name]?.[rank] ?? (rank ? rank + BRONZE_BONUS : 0);
@@ -45,12 +52,12 @@ export const metaTierWorth = (goal, rank) => META_TIER[goal.name]?.[rank] ?? (ra
 export const META_BY_GROUP = {
   guard: { ankle_braces: 2, pick_dodger: 3, mini_marksman: 2, seatbelt: 1.5, slippery_offball: 1, flash: 1.5,
     rise_up: 0.5, paint_prodigy: 0.5, boxout_boss: 0, possession_closer: 0.1, crasher: 0.25, sync_snatcher: 0.1, brick_wall: 0.5,
-    immovable_enforcer: 0.75, static_middy: 1.25, deadeye: 2.5, break_starter: 0.5, pogostick: 1, post_lockdown: 0, paint_patroller: 0, wall_up: 0,
+    immovable_enforcer: 0.75, static_middy: 1.25, deadeye: 2.5, break_starter: 0.5, pogostick: 1, post_lockdown: 0, paint_patroller: 0.75, wall_up: 0,
     versatile_visionary: 2, dimer: 0.75, bail_out: 0.5, small_contact_off_two: 1.5 },
   big: { ankle_braces: 0.5, pick_dodger: 0.5, seatbelt: 0, mini_marksman: 0, slippery_offball: 0, flash: 0.5,
     handles_for_days: 1, lightning_launch: 1.5, ankle_assassin: 0.5, arc_cadence: 0.75, posterizer: 2, strong_handle: 0.25, unpluckable: 0.1, layup_mixmaster: 0.5, physical_finisher: 0.5, static_middy: 0.75, immovable_enforcer: 2, pace: 0.5, interceptor: 2, challenger: 2,
-    boxout_boss: 0.5, possession_closer: 3, sync_snatcher: 1.25, crasher: 1.5, rise_up: 0.75, high_flying_denier: 2.5, post_lockdown: 2, brick_wall: 2, break_starter: 3, paint_prodigy: 0.75,
-    paint_patroller: 3, wall_up: 1, float_game: 0, bruiser: 1, brick_wall: 1, work_horse: 0.5, pro_contact_off_two: 1.5, pro_bigman_contact: 1, elite_bigman_contact: 0.5 },
+    boxout_boss: 0.5, possession_closer: 3, sync_snatcher: 1.25, crasher: 2, rise_up: 0.75, high_flying_denier: 2.25, post_lockdown: 2, brick_wall: 2, break_starter: 3, paint_prodigy: 0.75,
+    paint_patroller: 2.75, wall_up: 0.75, float_game: 0, bruiser: 1, brick_wall: 1, work_horse: 0.5, pro_contact_off_two: 1.5, pro_bigman_contact: 1, elite_bigman_contact: 0.5 },
 };
 // Strength on the perimeter: guards and wings don't buy strength for its own badges. Immovable Enforcer bronze (71) is
 // enough (higher tiers only for a real dunker, see STRENGTH_FREE), Brick Wall stops at bronze, and Bruiser / Physical
@@ -59,7 +66,10 @@ META_BY_GROUP.guard = { ...META_BY_GROUP.guard, immovable_enforcer: 0.75, brick_
 META_BY_GROUP.wing = { immovable_enforcer: 1.5, brick_wall: 0.25, bruiser: 0.25, physical_finisher: 0.5, strong_handle: 0.5, breaker: 0.25 };
 // Highest meta tier per group, on top of META_CAPS.
 export const META_CAPS_BY_GROUP = {
-  guard: { immovable_enforcer: 3, brick_wall: 1, bruiser: 1, physical_finisher: 2, strong_handle: 2 },
+  // Guards: Paint Patroller bronze at most (a PG chasing silver is paying big-man prices for it).
+  guard: { immovable_enforcer: 3, brick_wall: 1, bruiser: 1, physical_finisher: 2, strong_handle: 2, paint_patroller: 1 },
+  // Bigs: Crasher up to gold (93 offensive board: a center without it is missing half the job).
+  big: { crasher: 3 },
   wing: { immovable_enforcer: 3, brick_wall: 1, bruiser: 1, physical_finisher: 2, strong_handle: 2 },
 };
 // Strength tiers above these ranks only count for a driving dunker (93+ full, nothing at 87 or less): Strong Handle means
@@ -86,6 +96,8 @@ export const META_CAPS = { strong_handle: 2, boxout_boss: 2, crasher: 2, break_s
   aerial_wizard: 3, paint_prodigy: 2, float_game: 2, ghost_stepper: 2, pogostick: 2 };
 // How much meta counts next to your own picks while optimizing (your Normal = 1 per tier; top meta = 3 × 0.25).
 export const META_RATE = 0.25;
+const ix = name => attributes.findIndex(a => a.name === name);
+const DUNK_I = ix('driving_dunk'), THREE_I = ix('three_point'), BH_I = ix('ball_handle'), SPEED_I = ix('speed');
 export const metaOf = (goal, position, mode = '5v5') => {
   const base = META_BY_POS[position]?.[goal.name] ?? META_BY_GROUP[metaGroup(position)]?.[goal.name] ?? META[goal.name] ?? 0;
   const k = mode === '3v3' ? 1 : mode === 'both' ? 0.5 : 0;
@@ -99,6 +111,7 @@ export const META_3V3 = { break_starter: 0.3, dimer: 0.8, boxout_boss: 0.8, pick
 // (speed, agility) and, in the casual meta, a perimeter-defense floor of 75 for guards and wings (lower is a cone).
 // [weight, target, floor, ceiling, hit]: 3× weight below the floor, full to the target, a quarter to the ceiling, nothing
 // past; hit = a one-off bonus (in rating points) for reaching the target (a big's 90 board: 89 isn't 90).
+// Free throw: 64 is enough (you have to know your release, but it goes in); 65–70 is a small extra, nothing past 70.
 // Everyone: 78+ three (a non-shooter isn't meta, bigs included) and 65+ pass accuracy (lower is unplayable), aiming for
 // 80 (silver Versatile Visionary). Agility counts for everyone, bigs included (a slow, stiff big is a liability).
 // Guards and wings are fast: under 82 / 80 speed is slow for the role (a 6'8" SF at 78 speed isn't meta, whatever badges
@@ -106,13 +119,13 @@ export const META_3V3 = { break_starter: 0.3, dimer: 0.8, boxout_boss: 0.8, pick
 // Bigs: 87+ defensive rebound and 95 is the target (Possession Closer gold); 90 isn't a stopping point. Bigs: block before interior (Paint Patroller silver 71/84, High-Flying Denier), and
 // speed matters for them too. Strength isn't a target: it comes from the badges that use it.
 const ATTR = {
-  guard: { speed: [2, 88, 82], agility: [1.75, 86, 76], free_throw: [1, 70, 55, 75], perimeter_defense: [1, 75, 75, 75], three_point: [2, 86, 78, 95],
+  guard: { speed: [2, 88, 82], agility: [1.75, 86, 76], free_throw: [1, 64, 55, 70], perimeter_defense: [1, 75, 75, 75], three_point: [2, 89, 78, 95, 4],
     mid_range: [0.5, 80], ball_handle: [0.75, 90],
     pass_accuracy: [1.25, 80, 65, 80] },
-  wing: { speed: [2.5, 86, 80], agility: [1.75, 84, 74], driving_dunk: [0.75, 87, 78], free_throw: [1, 70, 55, 75], mid_range: [0.5, 80], perimeter_defense: [1, 75, 75, 75], three_point: [2, 78, 78, 78],
+  wing: { speed: [2.5, 86, 80], agility: [1.75, 84, 74], driving_dunk: [0.75, 87, 78], free_throw: [1, 64, 55, 70], mid_range: [0.5, 80], perimeter_defense: [1, 75, 75, 75], three_point: [2, 78, 78, 78],
     pass_accuracy: [1.25, 80, 65, 80] },
-  big: { speed: [2.5, 82, 74], agility: [1, 75, 65], defensive_rebound: [2, 95, 87, 95, 12], driving_dunk: [0.75, 85, 75], free_throw: [1, 70, 55, 75], three_point: [2, 78, 78, 78], pass_accuracy: [1.25, 80, 65, 80],
-    block: [1, 84, 75, 88], interior_defense: [0.5, 75, 70, 80] },
+  big: { speed: [2.5, 82, 74], agility: [1, 75, 65], defensive_rebound: [2, 95, 87, 95, 12], driving_dunk: [0.75, 85, 75], free_throw: [1, 64, 55, 70], three_point: [2, 78, 78, 78], pass_accuracy: [1.25, 80, 65, 80],
+    block: [0.85, 84, 75, 88], interior_defense: [0.4, 75, 70, 80], offensive_rebound: [1, 93, 75, 93, 4] },
 };
 // Below 78 three a build isn't meta at all: the meta score is scaled down 5% per point under it (to 40% at most).
 export const shootingGate = three => Math.max(0.4, 1 - 0.05 * Math.max(0, 78 - three));
@@ -125,8 +138,25 @@ export const finishGate = (dunk, layup) => Math.max(0.6, 1 - 0.025 * Math.max(0,
 export const REBOUND_FLOOR = 85;
 export const reboundGate = (dreb, position, height, swb) => (metaGroup(position) === 'big' || (height >= 81 && swb < 65))
   ? Math.max(0.55, 1 - 0.03 * Math.max(0, REBOUND_FLOOR - dreb)) : 1;
-export const attrMetaFor = (position, height = 80) => {
+// final (optional): the build's ratings, for terms that depend on the rest of the build. A real dunker (87+ driving dunk)
+// doesn't need mid-range: its target falls to 70 and counts half (a low mid with a high dunk is fine).
+// Forgoing the dunk on a guard takes an outstanding three, handle and speed (89 / 92 / 87): without them, a guard under
+// 87 driving dunk loses up to 15% of their meta score (full at 75 dunk or less, scaled by how far short the three,
+// handle and speed are). This keeps 87-dunk guards and elite shooter-handlers on the same footing.
+export const DUNKLESS = { three_point: 89, ball_handle: 92, speed: 87 };
+export function dunklessGate(final, position) {
+  if (metaGroup(position) !== 'guard') return 1;
+  const lack = Math.max(0, Math.min(1, (87 - final[DUNK_I]) / 12));
+  if (!lack) return 1;
+  const short = Math.min(1, Math.max(0, DUNKLESS.three_point - final[THREE_I]) / 6 + Math.max(0, DUNKLESS.ball_handle - final[BH_I]) / 8
+    + Math.max(0, DUNKLESS.speed - final[SPEED_I]) / 6);
+  return 1 - 0.15 * lack * short;
+}
+// Centers need the offensive board too: a C under 80 loses 1.5% per point (to 75% at most). PFs are spared (stretch fours).
+export const oboardGate = (orb, position) => position === 'C' ? Math.max(0.75, 1 - 0.015 * Math.max(0, 80 - orb)) : 1;
+export const attrMetaFor = (position, height = 80, final = null) => {
   const out = { ...ATTR[metaGroup(position)] };
+  if (final && out.mid_range && final[DUNK_I] >= 87) out.mid_range = [out.mid_range[0] * 0.5, 70];
   // Under 6'10" you guard the perimeter whatever the position says: a 6'7" "center" with 45 perimeter D is a cone.
   if (height < 82 && !out.perimeter_defense) out.perimeter_defense = [1, 75, 75, 75];
   return out;
@@ -149,7 +179,9 @@ export const dunkFactor = (goal, height) => STRENGTH_GOALS.has(goal.name) ? Math
 // Below: σ 4.5" (6'6" 0.91, 6'4" 0.67, 6'2" 0.41, 6'0" 0.21, 5'10" 0.08, 5'9" 0.05). Above: σ 7" (7'0" 0.85, 7'4" 0.52).
 export const heightMeta = (h, position) => {
   const peak = metaGroup(position) === 'big' ? 83 : 80; // bigs peak at 6'11", everyone else at 6'8"
-  return Math.exp(-(((h - peak) / (h < peak ? 4.5 : 7)) ** 2) / 2);
+  // Bigs fall off faster below 6'11" (σ 3.5": 6'9" 0.85, 6'8" 0.69, 6'7" 0.52): a 6'7" center is a small-ball gimmick.
+  const below = peak === 83 ? 3.5 : 4.5;
+  return Math.exp(-(((h - peak) / (h < peak ? below : 7)) ** 2) / 2);
 };
 // How strongly attribute meta counts relative to feel you set yourself (your Normal = 1).
 export const ATTR_META_RATE = 0.4;

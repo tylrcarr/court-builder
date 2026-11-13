@@ -3,9 +3,12 @@
 // The in-game builder requires every build to be filled to 99 Overall, so "budget" here means
 // how the 99 is spent, not how much is left over.
 import { alternatives, attributes, badgeTier, badges, capsFor, defaultBody, inHeight, ladder, mergeFloors,
-  overall, overallAs, playerTypeCount, positions, lowerResolved, raiseResolved, resolveLinks, scoreAsOfSums, scoreOfSums, sumsOf, sumsWith, tiers } from './engine.js';
+  overall, overallAs, playerTypeCount, positions, lowerResolved, raiseResolved, raiseTrial, resolveLinks, resolveTrial, scoreAsOfSums, scoreOfSums, scoresAfter, sumsOf, sumsWith,
+  tiers } from './engine.js';
 
 const N = attributes.length;
+// Scratch for allocation-free trial scoring (raiseTrial / scoresAfter).
+const AT = new Int32Array(N), TO = new Int32Array(N), SC = { score: 0, playerType: 0, as: 0 };
 const LIMIT = 99 + 1e-8;
 export const tierRank = tier => tier ? tiers.indexOf(tier) + 1 : 0;
 
@@ -169,15 +172,18 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
       if (!useSpecial && generalLeft <= 0) continue;
       const b = baseForTarget(i, targets[i], k[i] + 1, ctx, type);
       if (b == null || b >= floors[i]) continue;
-      const trialFloors = floors.map((f, j) => j === i ? b : f);
-      const [s, sAs, tb, tsm, tU] = both(trialFloors, i);
+      // Scored without building arrays (resolveTrial + scoresAfter: the same numbers as both()); the winner is built below.
+      const n = resolveTrial(floors, i, b, ctx.h, base0, ctx.caps, AT, TO);
+      const { score: s, as: sAs } = scoresAfter(sums0, base0, AT, TO, n, ctx.h, type, SC);
       const saving = cur - s, own = curAs - sAs;
       if (saving < -1e-9 || (saving <= 1e-9 && own <= 1e-9)) continue;
       const key = Math.max(0, saving) * 1e3 + own;
-      if (!best || key > best.key) best = { i, trialFloors, s, sAs, key, useSpecial, tb, tsm, tU };
+      if (!best || key > best.key) best = { i, b, key, useSpecial };
     }
     if (!best) break;
-    k[best.i]++; floors = best.trialFloors; cur = best.s; curAs = best.sAs; base0 = best.tb; sums0 = best.tsm; U0 = best.tU;
+    const trialFloors = floors.map((f, j) => j === best.i ? best.b : f);
+    const [s, sAs, tb, tsm, tU] = both(trialFloors, best.i);
+    k[best.i]++; floors = trialFloors; cur = s; curAs = sAs; base0 = tb; sums0 = tsm; U0 = tU;
     if (best.useSpecial) specialLeft--; else generalLeft--;
   }
   // Make `type` the player type: raise whichever base rating closes the gap to the leading archetype fastest.
@@ -188,19 +194,22 @@ export function satisfyAs(targets, ctx, { general = 0, special = { category: '',
     if (s.score > LIMIT) return null;
     if (s.playerType === type) break;
     const gap0 = s.score - scoreAsOfSums(sums, ctx.h, type);
-    let best = null;
+    // Each trial (+1 on one base rating, its links propagated) is scored without building arrays (raiseTrial +
+    // scoresAfter: the same numbers as raiseResolved + capAt + sumsWith + scoreOfSums); only the winner is built.
+    let bestI = -1, bestR = 0;
     for (let i = 0; i < N; i++) {
       if (base[i] >= Math.min(ctx.caps[i], ctx.maxes?.[i] ?? 99)) continue; // your maximums hold here too
-      const trialManual = manual.map((v, j) => j === i ? Math.max(v, base[j]) + 1 : v);
-      const tU = raiseResolved(U, ctx.h, i, Math.max(U[i], trialManual[i])), trial = capAt(tU, ctx.caps);
-      const tsm = sumsWith(sums, base, trial, ctx.h);
-      const ts = scoreOfSums(tsm, ctx.h);
-      const closed = gap0 - (ts.score - scoreAsOfSums(tsm, ctx.h, type));
+      const v = Math.max(manual[i], base[i]) + 1;
+      const n = raiseTrial(U, base, ctx.caps, ctx.h, i, Math.max(U[i], v), AT, TO);
+      const ts = scoresAfter(sums, base, AT, TO, n, ctx.h, type, SC);
+      const closed = gap0 - (ts.score - ts.as);
       const cost = ts.score - s.score;
-      if (closed > 1e-9 && (!best || closed / Math.max(1e-4, cost) > best.r)) best = { trialManual, trial, tsm, tU, r: closed / Math.max(1e-4, cost) };
+      if (closed > 1e-9 && (bestI < 0 || closed / Math.max(1e-4, cost) > bestR)) { bestI = i; bestR = closed / Math.max(1e-4, cost); }
     }
-    if (!best) return null;
-    manual = best.trialManual; base = best.trial; sums = best.tsm; U = best.tU;
+    if (bestI < 0) return null;
+    const trialManual = manual.map((v, j) => j === bestI ? Math.max(v, base[j]) + 1 : v);
+    const tU = raiseResolved(U, ctx.h, bestI, Math.max(U[bestI], trialManual[bestI])), trial = capAt(tU, ctx.caps);
+    manual = trialManual; sums = sumsWith(sums, base, trial, ctx.h); base = trial; U = tU;
   }
   const s = score(base, ctx.h);
   if (s.playerType !== type || s.score > LIMIT) return null;

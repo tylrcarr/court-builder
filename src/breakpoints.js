@@ -10,7 +10,7 @@ import { alternatives, attributes, badges, badgeTier, capsFor, defaultBody, empt
 import { mipReady, solvePlan } from './mip.js';
 import { clampLinks, fill, finalsFor, satisfy, satisfyAs, tierRank } from './solver.js';
 import { animations, isAnimation } from './animations.js';
-import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, dunkGate, finishGate, gatedTierWorth, heightMeta, metaCap, strengthFree, reboundGate, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
+import { FRAME_META, ATTR_META_RATE, DRIVE_ATTRS, META_RATE, attrMetaFor, driveFactor, dunkFactor, dunkGate, finishGate, dunklessGate, oboardGate, gatedTierWorth, heightMeta, metaCap, strengthFree, reboundGate, shootingGate, metaGroup, metaOf, metaTierWorth } from './meta.js';
 
 // Everything a build can aim for: badges plus animation unlocks (same shape, one tier).
 export const goals = [...badges, ...animations];
@@ -84,7 +84,7 @@ function continuousTerms(opts, final = null) {
   const names = final ? feelFor({ continuous: opts.continuous ?? [], notFeel: opts.notFeel }, '', final) : (opts.continuous ?? []);
   const terms = names.map(k => typeof k === 'number' ? k : idx[k]).map(i => [i, (cw[attributes[i].name] ?? 1) * CONTINUOUS_RATE, 99]);
   const rate = metaRate(opts);
-  if (rate > 0) for (const [name, [w, target, floor = 0, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(opts.position, opts.height))) {
+  if (rate > 0) for (const [name, [w, target, floor = 0, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(opts.position, opts.height, final))) {
     const i = idx[name];
     if (terms.some(t => t[0] === i) || (opts.notFeel ?? []).includes(name)) continue;
     terms.push([i, w * ATTR_META_RATE * rate * CONTINUOUS_RATE, target, floor, ceiling, hit]);
@@ -136,7 +136,7 @@ function metaParts(final, height, position, mode) {
       * gatedTierWorth(b, Math.min(tierRank(badgeTier(b, final, height)), metaCap(b, position)), position, final[idx.driving_dunk])
       * (drives[b.name] ? driveFactor(final[idx.speed_with_ball]) : 1);
   }
-  for (const [name, [w, target, floor = 60, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(position, height)))
+  for (const [name, [w, target, floor = 60, ceiling = 99, hit = 0]] of Object.entries(attrMetaFor(position, height, final)))
     total += termValue(w * ATTR_META_RATE * CONTINUOUS_RATE / META_RATE, target - 60, Math.max(0, final[idx[name]] - 60),
       Math.max(0, floor - 60), ceiling - 60, hit);
   return total;
@@ -192,7 +192,8 @@ export function metaScore(final, height, position, mode = '5v5', near = null) {
     / Math.max(1e-9, metaMaxOf(height, position, mode));
   return share * heightMeta(height, position) * shootingGate(final[idx.three_point])
     * reboundGate(final[idx.defensive_rebound], position, height, final[idx.speed_with_ball])
-    * finishGate(final[idx.driving_dunk], final[idx.driving_layup]);
+    * finishGate(final[idx.driving_dunk], final[idx.driving_layup])
+    * dunklessGate(final, position) * oboardGate(final[idx.offensive_rebound], position);
 }
 
 // Goal name → tier rank (up to its worth-paying cap) for every valued badge/animation these ratings hold.
@@ -350,7 +351,10 @@ export function optimizeBody(body, opts) {
     const r = optimizeOnce(body, { ...opts, mustHave: { ...opts.mustHave, [seed.name]: seed.tier } });
     if (!r.error && r.value > first.value + 1e-9) first = { ...r, seed };
   }
-  if (!opts.noDrop) first = dropPass(first, body, opts);
+  // beat: the score this plan has to beat (a forced archetype vs the natural one, see pickArchetype). The take-back pass
+  // adds at most ~7.9 (measured over 215 forced plans in six presets), so a plan further behind than DROP_REACH can't
+  // win and skips it: about a third of forced jobs, and the slowest ones.
+  if (!opts.noDrop && !(opts.beat != null && archetypeScore(first, body, opts) + DROP_REACH < opts.beat)) first = dropPass(first, body, opts);
   if (!opts.refine) return first;
   // Second pass: lock in what the first pass reached and look for a cheaper arrangement of it.
   const mustHave = { ...opts.mustHave };
@@ -364,7 +368,7 @@ export function optimizeBody(body, opts) {
 // of small badges (Post Control → six post badges) can soak up Overall that a meta attribute would use better. Cap the
 // highest ratings that aren't meta for this position (not your feel picks, minimums or leftover list) one at a time,
 // re-plan, and keep a version only if picks + meta improve. E.g. a 6'11" C: Post Control 86 → 60, meta 66.8 → 67.7.
-const DROP_TRIES = 3, DROP_TO = 60;
+const DROP_TRIES = 3, DROP_TO = 60, DROP_REACH = 8;
 function dropPass(first, body, opts) {
   const group = metaGroup(body.position), keep = new Set([...LEFTOVER[group], ...Object.keys(attrMetaFor(body.position, body.height)),
     ...(opts.continuous ?? []).map(k => typeof k === 'number' ? attributes[k].name : k)]);
@@ -572,15 +576,15 @@ function mipSpec(body, opts, type, hint) {
   const minimums = mergeFloors(opts.minimums ?? empty(), spec0).map((v, i) => Math.min(v, maxes[i]));
   const metaOn = metaRate(opts) > 0;
   const hintFinal = hint?.final ?? minimums;
-  const K = metaOn ? ARCH_META * 100 * heightMeta(h, pos) / Math.max(1e-9, metaMaxOf(h, pos, mode)) : 0;
+  const K = metaOn ? archMetaRate(opts) * 100 * heightMeta(h, pos) / Math.max(1e-9, metaMaxOf(h, pos, mode)) : 0;
   const share = metaParts(hintFinal, h, pos, mode);
   const g3 = shootingGate(hintFinal[idx.three_point]);
   const gReb = f => reboundGate(f, pos, h, hintFinal[idx.speed_with_ball]);
   const gR0 = gReb(hintFinal[idx.defensive_rebound]);
   const gF = finishGate(hintFinal[idx.driving_dunk], hintFinal[idx.driving_layup]);
-  const gR = gR0 * gF; // gates other than the one being linearized multiply the linear parts
+  const gR = gR0 * gF * dunklessGate(hintFinal, pos) * oboardGate(hintFinal[idx.offensive_rebound], pos); // gates other than the one being linearized multiply the linear parts
   const terms = continuousTerms(opts, hintFinal);
-  const metaTerms = metaOn ? Object.entries(attrMetaFor(pos, h)).map(([name, [w, target, floor = 60, ceiling = 99, hit = 0]]) => [idx[name], w, target, floor, ceiling, hit]) : [];
+  const metaTerms = metaOn ? Object.entries(attrMetaFor(pos, h, hintFinal)).map(([name, [w, target, floor = 60, ceiling = 99, hit = 0]]) => [idx[name], w, target, floor, ceiling, hit]) : [];
   const smooth = new Set([...terms.map(t => t[0]), ...metaTerms.map(t => t[0])]);
   if (metaOn) { smooth.add(idx.three_point); smooth.add(idx.driving_dunk); if (gR0 < 1 || metaGroup(pos) === 'big' || h >= 81) smooth.add(idx.defensive_rebound); }
   const attrValue = (i, f) => {
@@ -803,6 +807,12 @@ export function bodiesFor(positionList, heights, { frames = 3, around, opts } = 
   for (const position of positionList) for (const row of positions[position]) {
     if (row.height < heights[0] || row.height > heights[1]) continue;
     const mid = defaultBody(position, row.height);
+    if (opts?.arms === 'max') { // longest arms only: every weight that works at max wingspan
+      const ok = [];
+      for (let w = row.minWeight; w <= row.maxWeight; w++) { const body = { ...mid, weight: w, wingspan: row.maxWingspan }; if (!constrained || capFeasible(body, opts)) ok.push(body); }
+      for (const k of pick(0, ok.length - 1, Math.min(frames + 2, ok.length))) if (ok.length) out.push(ok[k]);
+      continue;
+    }
     if (constrained) {
       const ok = [];
       for (let w = row.minWeight; w <= row.maxWeight; w++) for (let s = row.minWingspan; s <= row.maxWingspan; s++) {
@@ -956,7 +966,13 @@ export function archetypeCandidates(r, n = 3) {
 // meta apart (a 6'6" SG with 99 dunk / 90 vertical / 80 steal: #11 meta 37 vs #7 meta 57). Only switch for a real
 // gain (half a point ≈ half a Normal badge tier).
 export const ARCH_META = 0.25;
-export const archetypeScore = (r, body, opts) => r.value + (metaRate(opts) > 0 ? ARCH_META * metaScore(r.final, body.height, body.position, opts.mode, nearOf(r)) : 0);
+// With no picks of your own (every badge on Don't care, no feel attributes) the search is a pure meta search: the picks
+// score is just meta badge worth without height or the meta gates, so it ranked 6'8" centers with more cap room over a
+// 6'11" one the meta score puts on top. There the meta score leads (META_ONLY per point).
+export const META_ONLY = 1.5;
+export const pureMeta = opts => !Object.entries(opts?.values ?? {}).some(([, v]) => v > 0) && !(opts?.continuous ?? []).length;
+export const archMetaRate = opts => pureMeta(opts) ? META_ONLY : ARCH_META;
+export const archetypeScore = (r, body, opts) => r.value + (metaRate(opts) > 0 ? archMetaRate(opts) * metaScore(r.final, body.height, body.position, opts.mode, nearOf(r)) : 0);
 export function pickArchetype(first, alts, body, opts) {
   return [first, ...alts].reduce((a, b) => archetypeScore(b, body, opts) > archetypeScore(a, body, opts) + 0.5 ? b : a);
 }
@@ -1012,9 +1028,9 @@ export function optimizeBodyFull(body, opts, { pinned = false } = {}) {
   if (first.error || opts.archetypes === false) return first;
   // Forced archetypes reuse the winning seed (the restarts only run on the natural archetype, to keep this fast).
   const seeded = first.seed ? { ...opts.mustHave, [first.seed.name]: first.seed.tier } : opts.mustHave;
-  const alts = [];
+  const alts = [], beat = archetypeScore(first, body, opts);
   for (const type of archetypeCandidates(first, opts.archetypeTries ?? 3)) {
-    const alt = optimizeBody(body, { ...opts, mustHave: seeded, forceType: type });
+    const alt = optimizeBody(body, { ...opts, mustHave: seeded, forceType: type, beat });
     if (!alt.error) alts.push({ ...alt, forcedType: type });
   }
   const best = pickArchetype(first, alts, body, opts);
@@ -1048,7 +1064,10 @@ export function polishPlan(r, opts, type = null) {
 export const rankPlans = (results, opts) => {
   const continuous = (opts.continuous ?? []).map(k => idx[k] ?? k);
   const physical = r => continuous.reduce((s, i) => s + r.final[i], 0);
-  return results.sort((a, b) => b.value - a.value || physical(b) - physical(a));
+  // Picks + meta (archetypeScore): picks alone can't see the meta score's height and gates, so with mostly-meta prefs the
+  // leaders polished and nudged weren't the builds shown on top (sorted by meta). Scores computed once per plan.
+  const score = new Map(results.map(r => [r, archetypeScore(r, r.body, opts)]));
+  return results.sort((a, b) => score.get(b) - score.get(a) || physical(b) - physical(a));
 };
 
 // Optimize many bodies (single thread; the Lab spreads optimizeBodyFull across workers instead).

@@ -1,3 +1,4 @@
+import { archetypeName } from '../archetypes.js';
 import React, { useMemo } from 'react';
 import { attributes, badgeTier, inHeight, name } from '../engine.js';
 import { archetypeHolders, goals, specMinimums, valueOf } from '../breakpoints.js';
@@ -28,7 +29,7 @@ export function ratingReasons(d, prefs) {
     if (spec[i] > 25 && d.ratings[i] >= spec[i]) { why.push({ at: spec[i], text: 'specialization' }); at = Math.max(at, spec[i]); }
     if ((prefs?.continuous ?? []).includes(key)) { why.push({ at: f, text: 'your feel pick' }); at = f; }
     const h = holders.get(i);
-    if (h) { why.push({ at: f, text: `holds archetype #${d.state.playerType}` }); at = f; }
+    if (h) { why.push({ at: f, text: `holds the ${archetypeName(d.height, d.state.playerType)} archetype` }); at = f; }
     if (f >= d.caps[i]) { why.push({ at: f, text: 'at cap' }); at = f; }
     const strongest = why.sort((a, b) => b.at - a.at);
     return { i, f, why: strongest, spare: Math.max(0, f - at) };

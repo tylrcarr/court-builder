@@ -2,6 +2,7 @@
 // blob, independent of what's scrolled into view.
 import { attributes, feet, name, tiers } from '../engine.js';
 import { applySynergy, groups, shownTiers } from '../derive.js';
+import { archetypeName } from '../archetypes.js';
 
 const C = {
   bg: '#0b0f17', card: '#121824', line: '#232d40', text: '#e8edf6', muted: '#8b97ad', accent: '#ff8a3d', lime: '#b6f23a',
@@ -21,7 +22,11 @@ export function buildImage({ build, d, title = '', overall }) {
 
   // Badge chips are laid out first to know the image height.
   // Badges at their tier after planned Synergy (Fuse/Reaction boosts marked, e.g. "Pogostick +1").
-  const syn = applySynergy(d.unlocked, build.synergy);
+  // Equipped tiers (Builder's badge picker: a lower tier, or 'off'), then planned Synergy.
+  const top = u => u.tier, eq = build.equip ?? {};
+  const equipped = d.unlocked.filter(u => eq[u.badge.name] !== 'off').map(u => ({ ...u,
+    tier: eq[u.badge.name] && tiers.indexOf(eq[u.badge.name]) <= tiers.indexOf(top(u)) ? eq[u.badge.name] : u.tier }));
+  const syn = applySynergy(equipped, build.synergy);
   const badgeRows = [];
   font(15, 600);
   for (const t of shownTiers.slice().reverse()) {
@@ -41,7 +46,10 @@ export function buildImage({ build, d, title = '', overall }) {
   const left = ['finishing', 'shooting', 'playmaking'], right = groups.filter(g => !left.includes(g));
   const colHeight = list => list.reduce((s, g) => s + 34 + attributes.filter(a => a.discipline === g).length * rowH, 0);
   const attrTop = 170, attrH = Math.max(colHeight(left), colHeight(right));
-  const badgeTop = attrTop + attrH + 30;
+  // Cap Breaker chart: every attribute's 5 steps for this archetype, applied ones lit (3 columns).
+  const cbTop = attrTop + attrH + 30, cbRowH = 28, cbCols = 3, cbPer = Math.ceil(attributes.length / cbCols);
+  const cbH = 44 + cbPer * cbRowH;
+  const badgeTop = cbTop + cbH + 24;
   const H = badgeTop + 44 + chipLines.length * 34 + 50;
   canvas.width = W; canvas.height = H;
 
@@ -90,6 +98,30 @@ export function buildImage({ build, d, title = '', overall }) {
   drawColumn(left, pad);
   drawColumn(right, pad * 2 + colW);
 
+  // Cap Breakers.
+  ctx.fillStyle = C.line; ctx.fillRect(pad, cbTop - 14, W - pad * 2, 1);
+  font(18, 800); ctx.fillStyle = C.text;
+  ctx.fillText(`Cap Breakers (${d.breakerCount})`, pad, cbTop + 14);
+  const titleW = ctx.measureText(`Cap Breakers (${d.breakerCount})`).width;
+  font(14, 500); ctx.fillStyle = C.muted;
+  ctx.fillText(`· ${d.height != null ? archetypeName(d.height, d.state.playerType) : ''} archetype · lit = applied`, pad + titleW + 10, cbTop + 14);
+  const cbW = (W - pad * 2 - 24 * (cbCols - 1)) / cbCols;
+  attributes.forEach((a, k) => {
+    const col = Math.floor(k / cbPer), row = k % cbPer, i = a.index;
+    const x = pad + col * (cbW + 24), y = cbTop + 40 + row * cbRowH;
+    font(13, 600); ctx.fillStyle = d.applied[i] ? C.text : C.muted; ctx.fillText(name(a.name), x, y + 15);
+    font(13, 800); ctx.fillStyle = tone(d.final[i]); ctx.textAlign = 'right';
+    ctx.fillText(d.applied[i] ? `${d.ratings[i]}→${d.final[i]}` : String(d.final[i]), x + 150, y + 15); ctx.textAlign = 'left';
+    const bx = x + 160, bw = (cbW - 160 - 4 * 4) / 5;
+    d.ladders[i].forEach((gain, step) => {
+      const on = step < d.applied[i];
+      ctx.fillStyle = on ? 'rgba(182,242,58,0.18)' : '#161d2b'; roundRect(ctx, bx + step * (bw + 4), y + 1, bw, 20, 5); ctx.fill();
+      if (on) { ctx.strokeStyle = 'rgba(182,242,58,0.6)'; ctx.lineWidth = 1; roundRect(ctx, bx + step * (bw + 4) + 0.5, y + 1.5, bw - 1, 19, 5); ctx.stroke(); }
+      font(11, 700); ctx.fillStyle = on ? C.lime : gain ? C.muted : C.low; ctx.textAlign = 'center';
+      ctx.fillText(gain ? `+${gain}` : '·', bx + step * (bw + 4) + bw / 2, y + 15); ctx.textAlign = 'left';
+    });
+  });
+
   // Badges by tier.
   ctx.fillStyle = C.line; ctx.fillRect(pad, badgeTop - 14, W - pad * 2, 1);
   font(18, 800); ctx.fillStyle = C.text; ctx.fillText(`Badges (${d.unlocked.length})`, pad, badgeTop + 14);
@@ -104,7 +136,7 @@ export function buildImage({ build, d, title = '', overall }) {
     y += 34;
   }
   if (!chipLines.length) { font(15); ctx.fillStyle = C.muted; ctx.fillText('No badges unlocked.', pad, y + 14); }
-  font(12); ctx.fillStyle = C.low; ctx.fillText('Court Builder · NBA 2K27 MyPLAYER lab', pad, H - 18);
+  font(12); ctx.fillStyle = C.low; ctx.fillText('The Build Lab · NBA 2K27 MyPLAYER', pad, H - 18);
 
   return new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
 }

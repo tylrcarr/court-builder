@@ -1,6 +1,8 @@
-import React, { useLayoutEffect, useState } from 'react';
-import { attributes, feet, name, positions } from '../engine.js';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { attributes, feet, name, positions, tiers } from '../engine.js';
 import { groups, tierLabel, tierShort } from '../derive.js';
+import { archetypeInfo } from '../archetypes.js';
 
 export const label = key => key === 'hall_of_fame' ? 'Hall of Fame' : name(key);
 export const SHORT = {
@@ -103,4 +105,77 @@ export function HeightRange({ value, onChange }) {
     <Select compact title="Max height" value={value[1]} options={opts}
       onChange={v => onChange([Math.min(value[0], Number(v)), Number(v)])} />
   </div>;
+}
+
+// A dialog over everything (rendered into <body>, so no card or sticky bar can sit on top of it). Esc or a click outside closes.
+export function Modal({ title, onClose, children, actions, wide = false }) {
+  useEffect(() => {
+    const onKey = e => e.key === 'Escape' && onClose();
+    window.addEventListener('keydown', onKey);
+    const { overflow } = document.body.style; document.body.style.overflow = 'hidden';
+    return () => { window.removeEventListener('keydown', onKey); document.body.style.overflow = overflow; };
+  }, [onClose]);
+  return createPortal(<div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+    <div className={'modal' + (wide ? ' wide' : '')} role="dialog" aria-modal="true" aria-label={typeof title === 'string' ? title : undefined}>
+      <div className="row-head modal-head"><h3>{title}</h3>
+        <div className="actions">{actions}<button className="mini-btn" aria-label="Close" onClick={onClose}>✕</button></div></div>
+      {children}
+    </div></div>, document.body);
+}
+
+// Archetype name with a "?" that explains it: what it weighs most (costly, small Cap Breaker steps) and least (cheap,
+// big steps). height/type: the build's height and player type.
+export function Archetype({ height, type, prefix = '' }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = e => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener('mousedown', away); return () => document.removeEventListener('mousedown', away);
+  }, [open]);
+  const info = archetypeInfo(height, type);
+  if (!info) return null;
+  const hover = useRef(null);
+  const show = () => { clearTimeout(hover.current); setOpen(true); };
+  const hide = () => { clearTimeout(hover.current); hover.current = setTimeout(() => setOpen(false), 150); };
+  return <span className="arch" ref={ref} onMouseEnter={show} onMouseLeave={hide}>{prefix}<b title={info.name}>{info.name}</b>
+    <button type="button" className="arch-q" aria-expanded={open} aria-label={`What is ${info.name}?`} onClick={e => { e.preventDefault(); e.stopPropagation(); setOpen(!open); }}>?</button>
+    {open && <span className="arch-pop" role="tooltip">
+      <b>{info.name}</b> <small className="muted">archetype #{type + 1} of 15 at {feet(height)}</small>
+      <span>The game picks your archetype from your base ratings. It decides how much each rating costs in Overall and how far
+        each Cap Breaker goes.</span>
+      <span><em>Built around</em> (costly, small breaker steps): {info.heavy.map(n => name(n)).join(', ')}</span>
+      <span><em>Cheap here</em> (big breaker steps): {info.light.map(n => name(n)).join(', ')}</span>
+    </span>}
+  </span>;
+}
+
+// A quick build card for comparing options: every rating with a green ▲ / red ▼ against the build you have, plus badge
+// tiers gained and lost. d / from: derived builds (see derive).
+export function QuickCard({ d, from: base, title, blurb, stats, onApply, applyLabel = 'Use this', children, disabled }) {
+  const tierOf = x => new Map(x.unlocked.map(u => [u.badge.name, u.tier]));
+  const now = tierOf(base), next = tierOf(d);
+  const rank = t => tiers.indexOf(t);
+  const gained = [...next].filter(([k, t]) => rank(t) > rank(now.get(k)));
+  const lost = [...now].filter(([k, t]) => rank(next.get(k)) < rank(t));
+  const changed = d.final.some((v, i) => v !== base.final[i]);
+  return <article className="quick-card">
+    <div className="row-head"><div><b>{title}</b>{blurb && <span className="muted small"> {blurb}</span>}</div>
+      <div className="actions">{stats}{onApply && <button className="primary mini-btn" disabled={disabled ?? !changed} onClick={onApply}>{applyLabel}</button>}</div></div>
+    <div className="qc-meta muted small">{d.finalName ?? 'Unnamed'} · <Archetype height={d.height} type={d.state.playerType} /> · {d.unlocked.length} badges
+      {d.unlocked.length !== base.unlocked.length && <b className={d.unlocked.length > base.unlocked.length ? 'good-text' : 'bad-text'}> ({d.unlocked.length > base.unlocked.length ? '+' : ''}{d.unlocked.length - base.unlocked.length})</b>}
+      {' '}· {d.breakerCount} breakers</div>
+    <div className="qc-grid">{groups.map(g => <div key={g} className="qc-group">
+      <h5 style={{ '--accent': disciplineColour(g) }}>{name(g)}</h5>
+      {attributes.filter(a => a.discipline === g).map(a => {
+        const v = d.final[a.index], x = v - base.final[a.index];
+        return <div key={a.name} className={'qc-row' + (x > 0 ? ' up' : x < 0 ? ' down' : '')} title={`${name(a.name)} ${base.final[a.index]} → ${v}`}>
+          <span>{SHORT[a.name]}</span><b className={ratingTone(v)}>{v}</b>
+          <i>{x > 0 ? `▲${x}` : x < 0 ? `▼${-x}` : ''}</i></div>;
+      })}</div>)}</div>
+    {(gained.length > 0 || lost.length > 0) && <div className="chips qc-badges">
+      {gained.map(([k, t]) => <span key={k} className="chip up">▲ {label(k)} {tierShort(t)}</span>)}
+      {lost.map(([k, t]) => <span key={k} className="chip down">▼ {label(k)} {next.get(k) ? `${tierShort(t)}→${tierShort(next.get(k))}` : tierShort(t)}</span>)}</div>}
+    {children}
+  </article>;
 }

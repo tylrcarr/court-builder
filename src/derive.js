@@ -6,7 +6,7 @@ import { MAX_SPECIALIZED, specUnlocked } from './breakpoints.js';
 export const zeros = () => attributes.map(() => 0);
 export const groups = [...new Set(attributes.map(a => a.discipline))];
 export const tierLabel = t => t === 'hall_of_fame' ? 'Hall of Fame' : t ? t[0].toUpperCase() + t.slice(1) : 'Locked';
-export const tierShort = t => ({ bronze: 'B', silver: 'S', gold: 'G', hall_of_fame: 'HoF', legend: 'Leg' })[t] ?? '–';
+export const tierShort = t => ({ bronze: 'B', silver: 'S', gold: 'G', hall_of_fame: 'H', legend: 'L' })[t] ?? '–';
 
 // Everything the UI needs about a build, computed in one place.
 // Specialization always grants MAX_SPECIALIZED (2) breakers once unlocked, so builds carry no specialized count.

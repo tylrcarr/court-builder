@@ -1,4 +1,4 @@
-# Court Builder
+# The Build Lab
 
 A local NBA 2K27 MyPLAYER build lab: hand-tune builds, or let the badge-first optimizer find builds for the
 badges and playstyle you want. Everything runs in the browser with bundled data.
